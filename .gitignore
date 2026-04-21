@@ -1,0 +1,6 @@
+selfnet_training/
+training_data/
+CARE_training/
+140325/
+nnunet_training/
+inference_cortical/
