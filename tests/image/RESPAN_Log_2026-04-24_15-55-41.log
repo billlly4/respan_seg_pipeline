@@ -1,0 +1,77 @@
+2026-04-24 15:55:41,921 - INFO - RESPAN Version: 1.0.00
+2026-04-24 15:55:41,922 - INFO - Release Date: 15 September, 2025
+2026-04-24 15:55:41,922 - INFO - Created by: Luke Hammond <luke.hammond@osumc.edu>
+2026-04-24 15:55:41,922 - INFO - Department of Neurology, The Ohio State University
+
+2026-04-24 15:55:41,922 - INFO -  RESPAN Parameters:
+2026-04-24 15:55:41,922 - INFO -   Image resolution: 0.102µm XY, 0.41µm Z
+2026-04-24 15:55:41,922 - INFO -   Model used: F:/ResPan/cloned_respan/Dataset226_Global1Bv2_XY65nm_Z150nm_CARE-Aug_spinecore_neck_dend_soma_axon_V6
+2026-04-24 15:55:41,922 - INFO -   Model type: Spines, Necks, Dendrites, and Soma
+2026-04-24 15:55:41,923 - INFO -   Model resolution: 0.065µm XY, 0.15µm Z
+2026-04-24 15:55:41,924 - INFO -   Conda Path F:\respan_exe\RESPAN_v1_0_00 and Environment Path F:\respan_exe\RESPAN_v1_0_00\_internal
+2026-04-24 15:55:41,924 - INFO -   Environment: respan
+2026-04-24 15:55:41,924 - INFO -   Base path: F:\respan_exe\RESPAN_v1_0_00\_internal
+
+2026-04-24 15:55:41,924 - INFO -   Dendrite volume set to: 1.0 µm, 234.0 voxels
+2026-04-24 15:55:41,925 - INFO -   Spine volume set to: 0.03 to 15.0 µm³, 7.0 to 3516.0 voxels
+2026-04-24 15:55:41,925 - INFO -   Spine distance filter set to: 4.0 µm, 39.22 pixels
+2026-04-24 15:55:41,925 - INFO -   Analysis method: Whole Neuron
+2026-04-24 15:55:41,925 - INFO -   GPU block size set to: 150,500,500
+2026-04-24 15:55:41,925 - INFO -   Tracking set to: False, using Rigid registration.
+2026-04-24 15:55:41,925 - INFO -   Image restoration set to False and axial restoration set to False
+2026-04-24 15:55:41,925 - INFO -   Neck generation True
+2026-04-24 15:55:41,925 - INFO -   Dask parallelization set to: False
+2026-04-24 15:55:41,925 - INFO -   nnUNet patching disabled.
+2026-04-24 15:55:41,925 - INFO - 
+Processing folder: F:/ResPan/images/image/
+
+2026-04-24 15:55:41,926 - INFO -  Detecting spines and dendrites...
+2026-04-24 15:55:41,926 - INFO -   Images will be rescaled to match network.
+2026-04-24 15:55:41,926 - INFO -   Scaling factors: Z = 2.73 Y = 1.57 X = 1.57 
+2026-04-24 15:55:41,927 - INFO -    Preparing image 1 of 1 - 140325_DIV17cx_BFP2_Lifeact_EGFP_LTP30min_0001.tif
+2026-04-24 15:55:41,932 - INFO -    Raw data has shape: (15, 141, 108)
+2026-04-24 15:55:42,015 - INFO -    Data rescaled to match model for labeling has shape: (41, 221, 169)
+2026-04-24 15:55:42,015 - INFO -    Estimated time to detect spines and dendrites for this image: 0.04 minutes.
+
+2026-04-24 15:55:42,032 - INFO -   Performing spine and dendrite detection on GPU...
+2026-04-24 15:55:42,033 - INFO -      Preserving nnUNet_results = F:/ResPan/cloned_respan
+2026-04-24 15:55:56,926 - INFO -    Predicting 140325_DIV17cx_BFP2_Lifeact_EGFP_LTP30min_0001:
+2026-04-24 15:55:59,191 - INFO -    50% [Time left: 1]
+2026-04-24 15:56:02,580 - INFO -    done with 140325_DIV17cx_BFP2_Lifeact_EGFP_LTP30min_0001
+2026-04-24 15:56:03,185 - INFO - 
+  Total time for spine and dendrite label creation: 0.35 minutes.
+2026-04-24 15:56:03,186 - INFO - 
+-----------------------------------------------------------------------------------------------------
+2026-04-24 15:56:03,187 - INFO - Analyzing spines...
+2026-04-24 15:56:03,188 - INFO -  Analyzing image 1 of 1 
+  Raw Image: 140325_DIV17cx_BFP2_Lifeact_EGFP_LTP30min_0001.tif & Label Image: 140325_DIV17cx_BFP2_Lifeact_EGFP_LTP30min_0001.tif
+2026-04-24 15:56:03,204 - INFO -   Raw shape: (15, 141, 108) & Labels shape: (41, 221, 169)
+2026-04-24 15:56:03,206 - INFO -   Raw image size: 0.000 GB
+2026-04-24 15:56:03,206 - INFO -   orignal settings shape: (15, 141, 108)
+2026-04-24 15:56:03,209 - INFO -   labels resized: (15, 141, 108)
+2026-04-24 15:56:03,335 - INFO -    Filtering dendrites...
+2026-04-24 15:56:03,340 - INFO -     Processing 0 of 26 detected dendrites larger than minimum volume threshold of 234.0 voxels
+2026-04-24 15:56:03,341 - INFO -   *No dendrites were analyzed for this image.
+2026-04-24 15:56:03,341 - INFO -      Complete.
+
+2026-04-24 15:56:03,342 - INFO -  Processing complete for file 140325_DIV17cx_BFP2_Lifeact_EGFP_LTP30min_0001. Total spine analysis time: 0.0 minutes.
+---
+2026-04-24 15:56:03,447 - INFO - RESPAN analysis complete.
+2026-04-24 15:56:03,447 - INFO - -----------------------------------------------------------------------------------------------------
+2026-04-24 15:56:03,447 - INFO - RESPAN Version: 1.0.00
+2026-04-24 15:56:03,448 - INFO - Release Date: 15 September, 2025
+2026-04-24 15:56:03,448 - INFO - Created by: Luke Hammond <luke.hammond@osumc.edu>
+2026-04-24 15:56:03,448 - INFO - Department of Neurology, The Ohio State University
+2026-04-24 15:56:03,448 - INFO - -----------------------------------------------------------------------------------------------------
+2026-04-24 15:56:03,448 - INFO - 
+Please cite the following paper when using RESPAN:
+A deep learning pipeline for accurate and automated restoration, segmentation, and quantification of dendritic spines
+Sergio Bernal-Garcia, Alexa P. Schlotter, Daniela Pereira, Franck Polleux, Luke A. Hammond
+doi: https://doi.org/10.1101/2024.06.06.597812
+
+2026-04-24 15:56:03,448 - INFO - Please cite the following paper when using nnU-Net:
+Isensee, F., Jaeger, P. F., Kohl, S. A., Petersen, J., & Maier-Hein, K. H. (2021). nnU-Net: a self-configuring
+network for medical image segmentation. Nature methods, 18(2), 203-211.
+
+2026-04-24 15:56:03,448 - INFO - -----------------------------------------------------------------------------------------------------
+2026-04-24 15:56:03,450 - INFO - 

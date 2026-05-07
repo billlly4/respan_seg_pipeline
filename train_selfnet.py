@@ -52,19 +52,26 @@ import shutil
 import logging
 import argparse
 import subprocess
+import runpy
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Configuration  — defaults for fast pipeline test
 # ---------------------------------------------------------------------------
 # Best single stack: 38 Z planes (rescaled to 92px XZ >> 64px patch), 17/38 signal slices, scale=0.41
-DEFAULT_IMAGES = [r'f:\ResPan\selfnet_training\data\extracted_ch2\HippoDIV16_control_Series074_ch2.tif']
-DEFAULT_OUTPUT = r'f:\ResPan\selfnet_training\output'
+_BASE = Path(__file__).resolve().parent
+
+DEFAULT_IMAGES = [str(_BASE / 'selfnet_training' / 'data' / 'extracted_ch2' / 'HippoDIV16_control_Series074_ch2.tif')]
+DEFAULT_OUTPUT = str(_BASE / 'selfnet_training' / 'output')
 DEFAULT_NAME   = 'selfnet_test'
 
-SELFNET_SCRIPT     = r'f:\ResPan\cloned_respan\RESPAN\Scripts\SelfNet_Model_Training.py'
-RESPANINTERNAL_PY  = r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe'
-NNUNET_REPO        = r'f:\ResPan\nnUNet'   # ensures nnunetv2 is importable if needed
+SELFNET_SCRIPT = str(_BASE / 'cloned_respan' / 'RESPAN' / 'Scripts' / 'SelfNet_Model_Training.py')
+NNUNET_REPO    = str(_BASE / 'nnUNet')
+
+_mahti_py         = '/projappl/project_2019059/respan/envs/respaninternal/bin/python'
+_win_py           = r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe'
+RESPANINTERNAL_PY = _mahti_py if os.path.exists(_mahti_py) else _win_py
+_ON_MAHTI         = os.path.exists(_mahti_py)
 
 
 # ---------------------------------------------------------------------------
@@ -160,8 +167,8 @@ def main():
     logger.info('')
     logger.info('Launching SelfNet_Model_Training.py via respaninternal...')
 
-    cmd = [
-        RESPANINTERNAL_PY, '-u', SELFNET_SCRIPT,
+    selfnet_argv = [
+        SELFNET_SCRIPT,
         '--input_dir',    work_dir + os.sep,
         '--model_path',   args.output,
         '--model_name',   args.name,
@@ -177,14 +184,19 @@ def main():
         '--imshow_interval', str(args.imshow_interval),
     ]
 
-    logger.info('Command: ' + ' '.join(cmd))
-    logger.info('')
-
-    result = subprocess.run(cmd)
-
-    if result.returncode != 0:
-        logger.error(f'SelfNet training failed (exit code {result.returncode})')
-        sys.exit(result.returncode)
+    if _ON_MAHTI:
+        logger.info('Mahti: running SelfNet directly (no subprocess)')
+        logger.info('')
+        sys.argv = selfnet_argv
+        runpy.run_path(SELFNET_SCRIPT, run_name='__main__')
+    else:
+        cmd = [RESPANINTERNAL_PY, '-u'] + selfnet_argv
+        logger.info('Command: ' + ' '.join(cmd))
+        logger.info('')
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            logger.error(f'SelfNet training failed (exit code {result.returncode})')
+            sys.exit(result.returncode)
 
     logger.info('')
     logger.info(f'=== Done. Model saved to: {output_dir} ===')

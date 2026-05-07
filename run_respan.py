@@ -45,23 +45,25 @@ from tifffile import imread, imwrite
 warnings.filterwarnings('ignore', category=FutureWarning)
 
 # ---------------------------------------------------------------------------
-# PATHS  (edit these if the project moves)
+# PATHS  — auto-detected by hostname; edit the two blocks below if needed
 # ---------------------------------------------------------------------------
+_BASE = Path(__file__).resolve().parent
 
-DATASETS_ROOT = r'f:\ResPan\inference_cortical'
+DATASETS_ROOT = str(_BASE / 'images')
+RESPAN_ROOT   = str(_BASE / 'cloned_respan')
+NNUNET_REPO   = str(_BASE / 'nnUNet')
 
-MODEL_DIR = (
-    r'f:\ResPan\cloned_respan'
-    r'\Dataset219_Model_1A_Global_202Corrected_SDC_Global-Model1_withCARErestoreddata'
-    r'_XY65nm_Z150nm_CARE-and-Augmented_244images_noVal'
+MODEL_DIR = str(
+    _BASE / 'cloned_respan'
+    / 'Dataset226_Global1Bv2_XY65nm_Z150nm_CARE-Aug_spinecore_neck_dend_soma_axon_V6'
 )
 
-RESPAN_ROOT           = r'f:\ResPan\cloned_respan'
-NNUNET_REPO           = r'f:\ResPan\nnUNet'
-RESPANINTERNAL_PYTHON = r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe'
+_mahti_py = '/projappl/project_2019059/respan/envs/respaninternal/bin/python'
+_win_py   = r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe'
+RESPANINTERNAL_PYTHON = _mahti_py if os.path.exists(_mahti_py) else _win_py
 
 NNUNET_RESULTS = str(Path(MODEL_DIR).parent)
-DATASET_ID     = '219'
+DATASET_ID     = '226'
 
 # 0-indexed channel that contains the structural morphology fill.
 # For single-channel TIFs this must be 0.
@@ -197,9 +199,7 @@ def prepare_image(src_path, prep_dir, in_xy, in_z):
 # Step 2 – nnU-Net segmentation (subprocess in respaninternal)
 # ---------------------------------------------------------------------------
 
-RESPANINTERNAL_PYTHON = r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe'
-
-def run_nnunet(prep_dir, labels_dir):
+def run_nnunet(prep_dir, labels_dir, checkpoint_name='checkpoint_best.pth'):
     """
     Run nnU-Net predict_entry_point() as a subprocess under respaninternal.
     This avoids the torch 2.6.0 hang that occurs when importing nnunetv2
@@ -220,7 +220,7 @@ def run_nnunet(prep_dir, labels_dir):
         f"    '-d', '{DATASET_ID}',\n"
         "    '-c', '3d_fullres',\n"
         "    '-f', 'all',\n"
-        "    '-chk', 'checkpoint_best.pth',\n"
+        f"    '-chk', '{checkpoint_name}',\n"
         "]\n"
         "from nnunetv2.inference.predict_from_raw_data import predict_entry_point\n"
         "predict_entry_point()\n"
@@ -263,13 +263,17 @@ def _make_settings(cfg, out_dir):
     s.model_resXY = in_xy
     s.model_resZ  = in_z
 
-    s.model_type     = 1   # "Spines, Dendrites, and Soma"
+    s.model_type     = 4   # "Dendrites, Spine Cores, Spine Membranes, Necks, Soma, Axons"
     s.neuron_channel = 1   # 1-indexed in RESPAN
 
     voxel_vol = in_xy ** 2 * in_z
-    s.min_dendrite_vol  = int(15.0 / voxel_vol)
-    s.neuron_spine_size = (int(0.03 / voxel_vol), int(15.0 / voxel_vol))
-    s.neuron_spine_dist = 4.0 / in_xy
+    min_dend_um3   = float(cfg.get('min_dendrite_vol_um3',  1.0))
+    min_spine_um3  = float(cfg.get('min_spine_vol_um3',     0.03))
+    max_spine_um3  = float(cfg.get('max_spine_vol_um3',    15.0))
+    spine_dist_um  = float(cfg.get('spine_dist_filter_um',  4.0))
+    s.min_dendrite_vol  = int(min_dend_um3 / voxel_vol)
+    s.neuron_spine_size = (int(min_spine_um3 / voxel_vol), int(max_spine_um3 / voxel_vol))
+    s.neuron_spine_dist = spine_dist_um / in_xy
 
     # Analysis parameters from YAML (with safe defaults)
     s.tiles_for_prediction = cfg.get('tiles_for_prediction', (2, 3, 3))
@@ -398,7 +402,7 @@ def check_cupy():
 # Per-image processing
 # ---------------------------------------------------------------------------
 
-def process_image(img_path, out_dir, yaml_src, cfg):
+def process_image(img_path, out_dir, yaml_src, cfg, checkpoint_name='checkpoint_best.pth'):
     """
     Run the full pipeline for one image.
 
@@ -448,7 +452,7 @@ def process_image(img_path, out_dir, yaml_src, cfg):
         print(f'       (delete {labels_dir} to re-run segmentation)')
     else:
         print('\n[2/3]  Running nnU-Net segmentation...')
-        run_nnunet(prep_dir, labels_dir)
+        run_nnunet(prep_dir, labels_dir, checkpoint_name)
 
     # --- Step 3: RESPAN analysis ---
     print('\n[3/3]  Running RESPAN spine analysis...')
@@ -492,12 +496,13 @@ def main():
         print(f'ERROR: Model not found:\n  {MODEL_DIR}')
         sys.exit(1)
 
-    checkpoint = os.path.join(
-        MODEL_DIR, 'nnUNetTrainer__nnUNetPlans__3d_fullres',
-        'fold_all', 'checkpoint_best.pth'
-    )
-    if not os.path.isfile(checkpoint):
-        print(f'ERROR: checkpoint_best.pth not found:\n  {checkpoint}')
+    for _ckpt in ('checkpoint_best.pth', 'checkpoint_final.pth'):
+        checkpoint = os.path.join(
+            MODEL_DIR, 'nnUNetTrainer__nnUNetPlans__3d_fullres', 'fold_all', _ckpt)
+        if os.path.isfile(checkpoint):
+            break
+    else:
+        print(f'ERROR: no checkpoint found in:\n  {MODEL_DIR}')
         sys.exit(1)
 
     datasets = find_datasets(DATASETS_ROOT, filter_names)
@@ -527,7 +532,7 @@ def main():
         for img_path in tif_paths:
             stem    = Path(img_path).stem
             out_dir = os.path.join(dataset_dir, stem)
-            process_image(img_path, out_dir, yaml_path, cfg)
+            process_image(img_path, out_dir, yaml_path, cfg, _ckpt)
 
     print('=' * 65)
     print('All datasets complete.')

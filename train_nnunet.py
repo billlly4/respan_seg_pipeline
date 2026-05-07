@@ -40,14 +40,18 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-TRAINING_DATA = r'f:\ResPan\training_data'
-NNUNET_BASE   = r'f:\ResPan\nnunet_training'
+_BASE = Path(__file__).resolve().parent
+
+TRAINING_DATA = str(_BASE / 'training_data')
+NNUNET_BASE   = str(_BASE / 'nnunet_training')
 
 DATASET_ID    = 1
 DATASET_NAME  = f'Dataset{DATASET_ID:03d}_Spines'
 
-RESPANINTERNAL_PYTHON = r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe'
-NNUNET_REPO   = r'f:\ResPan\nnUNet'
+_mahti_py             = '/projappl/project_2019059/respan/envs/respaninternal/bin/python'
+_win_py               = r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe'
+RESPANINTERNAL_PYTHON = _mahti_py if os.path.exists(_mahti_py) else _win_py
+NNUNET_REPO           = str(_BASE / 'nnUNet')
 
 # Label scheme — matches Dataset219 (Model 1A) for future compatibility
 LABELS = {
@@ -68,6 +72,9 @@ IMAGES_TR        = os.path.join(DATASET_DIR, 'imagesTr')
 LABELS_TR        = os.path.join(DATASET_DIR, 'labelsTr')
 
 
+_ON_MAHTI = os.path.exists(_mahti_py)
+
+
 def _nnunet_env():
     env = os.environ.copy()
     env['nnUNet_raw']          = RAW_DIR
@@ -75,6 +82,12 @@ def _nnunet_env():
     env['nnUNet_results']      = RESULTS_DIR
     env['PYTHONNOUSERSITE']    = '1'
     return env
+
+
+def _set_nnunet_env():
+    """Apply nnUNet env vars to the current process (Mahti direct-call path)."""
+    for k, v in _nnunet_env().items():
+        os.environ[k] = v
 
 
 def _run(runner_code, label):
@@ -157,8 +170,21 @@ def setup():
 # ---------------------------------------------------------------------------
 def plan():
     """Run nnUNetv2_plan_and_preprocess for the dataset."""
-    # Add nnUNet repo to path so nnunetv2 is importable in respaninternal
-    runner = f"""
+    label = f'plan_and_preprocess  Dataset{DATASET_ID:03d}'
+    print(f'\n{"="*60}\n  {label}\n{"="*60}')
+    if _ON_MAHTI:
+        _set_nnunet_env()
+        sys.path.insert(0, NNUNET_REPO)
+        sys.argv = [
+            'nnUNetv2_plan_and_preprocess',
+            '-d', str(DATASET_ID),
+            '--verify_dataset_integrity',
+            '-c', '3d_fullres',
+        ]
+        from nnunetv2.experiment_planning.plan_and_preprocess_entrypoints import plan_and_preprocess_entry
+        plan_and_preprocess_entry()
+    else:
+        runner = f"""
 import sys
 sys.path.insert(0, r'{NNUNET_REPO}')
 sys.argv = [
@@ -170,7 +196,7 @@ sys.argv = [
 from nnunetv2.experiment_planning.plan_and_preprocess_entrypoints import plan_and_preprocess_entry
 plan_and_preprocess_entry()
 """
-    _run(runner, f'plan_and_preprocess  Dataset{DATASET_ID:03d}')
+        _run(runner, label)
     print(f'\nNext: run with argument "train"')
 
 
@@ -179,7 +205,22 @@ plan_and_preprocess_entry()
 # ---------------------------------------------------------------------------
 def train():
     """Run nnUNetv2_train  3d_fullres  fold=all."""
-    runner = f"""
+    label = f'train  Dataset{DATASET_ID:03d}  3d_fullres  fold=all'
+    print(f'\n{"="*60}\n  {label}\n{"="*60}')
+    if _ON_MAHTI:
+        _set_nnunet_env()
+        sys.path.insert(0, NNUNET_REPO)
+        sys.argv = [
+            'nnUNetv2_train',
+            str(DATASET_ID),
+            '3d_fullres',
+            'all',
+            '--npz',
+        ]
+        from nnunetv2.run.run_training import run_training_entry
+        run_training_entry()
+    else:
+        runner = f"""
 import sys
 sys.path.insert(0, r'{NNUNET_REPO}')
 sys.argv = [
@@ -192,7 +233,7 @@ sys.argv = [
 from nnunetv2.run.run_training import run_training_entry
 run_training_entry()
 """
-    _run(runner, f'train  Dataset{DATASET_ID:03d}  3d_fullres  fold=all')
+        _run(runner, label)
 
 
 # ---------------------------------------------------------------------------

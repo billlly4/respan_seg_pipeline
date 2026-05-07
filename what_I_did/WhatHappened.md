@@ -783,4 +783,411 @@ All parameters have defaults — pass only what you want to change.
 ### Next Steps
 
 - [ ] Acquire real paired low/high SNR z-stacks for CARE training
-- [ ] Set up SelfNet training pipeline (self-supervised, no paired data needed)
+- [x] Set up SelfNet training pipeline — DONE (see Day 6 below)
+
+---
+
+## Day 6 — 2026-04-20/21
+
+### SelfNet Training Pipeline
+
+Set up `train_selfnet.py` — the self-supervised axial restoration training pipeline. Unlike CARE, SelfNet needs no paired data: it learns to restore blurry Z planes from the image itself by comparing the sharp XY view to the stretched XZ/YZ views.
+
+**How SelfNet works (3 internal steps in `SelfNet_Model_Training.py`):**
+
+1. `self_net_create_slices` — extract 2D slices in XY (sharp), XY-lowres (downsampled to match Z PSF), XZ (stretched), and YZ (stretched) orientations
+2. `generate_training_data` — crop 64×64 patches from those slices (background patches discarded via `bg_threshold`)
+3. `train_self_net` — train a CycleGAN mapping XY-lowres ↔ XZ/YZ; only the `deblur_net` generator is saved
+
+**Key parameters:**
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `--scale` | 0.5 | `XY_res / Z_step` anisotropy ratio. e.g. 0.082 µm XY / 0.200 µm Z → 0.41 |
+| `--epochs` | 40 | Training epochs |
+| `--batch_size` | 8 | Images per gradient step |
+| `--xy_interval` | 4 | Take every Nth XY slice |
+| `--xz_interval` | 8 | Take every Nth XZ slice |
+| `--bg_threshold` | 10 | Min intensity for patch selection (10 for uint8, ~1000 for uint16) |
+| `--min_v / --max_v` | 0 / 255 | Intensity range for normalisation |
+
+**Z-plane constraint:** image must have `>= ceil(64 × scale)` Z planes. At scale=0.41 that means ≥ 27 Z planes. The hippo stack (38 Z planes) is sufficient; the cortical LTP stack (15 Z planes) is not.
+
+**Environment:** runs in `respaninternal` (PyTorch, hardcoded to `cuda:0`). Not `respandev`.
+
+**Runs as subprocess:** `train_selfnet.py` calls `SelfNet_Model_Training.py` as a subprocess under `respaninternal` Python (same container-boundary pattern as nnU-Net inference).
+
+**How to run:**
+```
+# Pipeline test (3 epochs, default hippo stack):
+C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe  f:\ResPan\train_selfnet.py
+
+# Real training with custom images and scale:
+C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe  f:\ResPan\train_selfnet.py \
+    --images path\to\stack1.tif path\to\stack2.tif \
+    --scale 0.41 --epochs 40 --batch_size 8
+```
+
+---
+
+### model_type Fix (Dataset226)
+
+Discovered that `_make_settings()` in `run_respan.py` was setting `model_type=1` (Model 1A — spine cores + dendrites only). The pre-trained model in `cloned_respan` is **Dataset226**, which is Model 4 (spine cores + spine membranes + necks + soma + axons). Using the wrong model_type causes RESPAN to misinterpret the label classes.
+
+**Fixed:** `model_type = 4` in `_make_settings()`.
+
+---
+
+### Next Steps
+
+- [ ] Acquire real paired low/high SNR z-stacks for CARE training
+- [ ] Run analysis on larger datasets (180626 cortical, 280622 hippo)
+- [ ] Set up Mahti GPU cluster for large-scale runs
+
+---
+
+## Day 7 — 2026-04-29
+
+### Goal
+
+Set up the RESPAN pipeline on **CSC Mahti** (Finnish supercomputer, A100 GPUs) so that long training and analysis runs can happen on real GPU hardware without blocking the local machine.
+
+---
+
+### Mahti Infrastructure
+
+- **Cluster:** CSC Mahti, A100-SXM4-40GB GPUs, SLURM scheduler
+- **Project:** `project_2019059`
+- **Storage:**
+  - `/scratch/project_2019059/respan/` — 1 TB scratch (code + data)
+  - `/projappl/project_2019059/respan/` — 50 GB persistent (environments)
+- **GPU partition:** `gpusmall` (1 GPU, max 36h), `gpumedium` (2–4 GPUs)
+- **Interactive GPU session:** `srun --account=project_2019059 --partition=gpusmall --gres=gpu:a100:1 --time=04:00:00 --mem=64G --ntasks=1 --cpus-per-task=10 --pty bash`
+
+---
+
+### Environment Setup (tykky)
+
+CSC uses **tykky** (`conda-containerize`) to package conda environments into Singularity containers for use on compute nodes. Two environments were built at `/projappl/project_2019059/respan/envs/`:
+
+**respandev** (TensorFlow / CARE / analysis):
+```yaml
+channels: [conda-forge, defaults]
+dependencies:
+  - python=3.10
+  - pip:
+    - tensorflow==2.13.0
+    - csbdeep
+    - cupy-cuda12x        # must be 12x — Mahti compute nodes have CUDA 12.2
+    - tifffile, pyyaml, scikit-image, scipy, numpy<2.0
+    - pandas, scikit-learn, matplotlib, patchify
+    - psutil, dask[distributed], dask-image
+    - numba, numcodecs, ome-zarr, zarr
+    - trimesh, nibabel, memory-profiler
+```
+
+**respaninternal** (PyTorch / nnU-Net):
+```yaml
+channels: [pytorch, nvidia, conda-forge, defaults]
+dependencies:
+  - python=3.10
+  - pytorch::pytorch=2.2.1
+  - pytorch::pytorch-cuda=11.8
+  - pip: [nnunetv2, tifffile, scikit-image, scipy, numpy]
+```
+
+Build command (first-time or full rebuild):
+```bash
+module load tykky
+conda-containerize new --prefix /projappl/project_2019059/respan/envs/respandev \
+    /projappl/project_2019059/respan/env_dev.yaml
+```
+
+Update (add packages without full rebuild):
+```bash
+echo "pip install <packages>" > /tmp/fix.sh
+conda-containerize update --post-install /tmp/fix.sh \
+    /projappl/project_2019059/respan/envs/respandev
+```
+
+Python wrappers:
+- `/projappl/project_2019059/respan/envs/respandev/bin/python`
+- `/projappl/project_2019059/respan/envs/respaninternal/bin/python`
+
+---
+
+### Issues Encountered and Fixed
+
+| Problem | Fix |
+|---|---|
+| `cupy-cuda11x` can't find `libnvrtc.so.11.2` on compute nodes | Rebuilt with `cupy-cuda12x` (compute nodes have CUDA 12.2 driver) |
+| `cuda/12.1.1` module not loading | Must load `gcc/10.4.0` first: `module load gcc/10.4.0 cuda/12.1.1` |
+| Many missing packages (`patchify`, `psutil`, `dask`, `numba`, etc.) | Found all imports via grep of RESPAN source; added all in one `conda-containerize update` |
+| `numpy` upgraded to 2.2.6 by dask dependency resolver | Pinned back: `pip install 'numpy==1.24.3' 'typing-extensions==4.5.0'` |
+| respandev installed to `~/` instead of projappl on first attempt | Used `--prefix` flag: `conda-containerize new --prefix <path> <yaml>` |
+| `tykky` module not found | Must `module load tykky` before every use — not persistent across login nodes |
+
+---
+
+### Script Path Strategy
+
+All 4 scripts (`run_respan.py`, `train_care.py`, `train_selfnet.py`, `train_nnunet.py`) were updated to use **`__file__`-relative paths** so they work on any machine without editing:
+
+```python
+_BASE = Path(__file__).resolve().parent
+DATASETS_ROOT = str(_BASE / 'images')
+RESPAN_ROOT   = str(_BASE / 'cloned_respan')
+NNUNET_REPO   = str(_BASE / 'nnUNet')
+```
+
+The Python interpreter path (only environment-specific constant) uses an existence check:
+```python
+_mahti_py = '/projappl/project_2019059/respan/envs/respaninternal/bin/python'
+_win_py   = r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe'
+RESPANINTERNAL_PYTHON = _mahti_py if os.path.exists(_mahti_py) else _win_py
+```
+
+---
+
+### File Transfer
+
+The full `f:\ResPan\` folder was transferred to `/scratch/project_2019059/respan/code/ResPan/` using the **CSC web dashboard** (`https://www.mahti.csc.fi/pun/sys/dashboard/files/`) drag-and-drop — the simplest method that avoids SSH key issues on Windows.
+
+SSH config (`~/.ssh/config`) was also set up for VS Code Remote-SSH:
+```
+Host mahti
+    HostName mahti.csc.fi
+    User kharash
+    IdentityFile ~/.ssh/id_ed25519
+```
+
+After connecting, add to `~/.bashrc` to fix a known Mahti VS Code memory error:
+```bash
+export NODE_OPTIONS="--disable-wasm-trap-handler"
+```
+
+---
+
+### Container Nesting Problem (Mahti-specific)
+
+On Mahti, `run_respan.py` runs inside the **respandev** tykky container. When it tries to call `respaninternal` Python as a subprocess for nnU-Net, it fails because you cannot launch a tykky container from inside another tykky container:
+
+```
+[ ERROR ] Installation for /projappl/.../respaninternal/ is not mounted.
+          Wrapper called from another container?
+```
+
+On Windows this is not a problem (conda envs can freely call each other). On Mahti the solution is to run nnU-Net and analysis as two separate commands.
+
+**Fix: `run_nnunet_only.py`** — a Mahti-specific helper script that runs under `respaninternal` and handles steps 1 (prepare) and 2 (nnU-Net) for all datasets. Then `run_respan.py` runs under `respandev` and skips nnU-Net automatically because labels already exist.
+
+---
+
+### How to Run on Mahti
+
+```bash
+# 1. Get an interactive GPU session
+srun --account=project_2019059 --partition=gpusmall \
+     --gres=gpu:a100:1 --time=04:00:00 --mem=64G \
+     --ntasks=1 --cpus-per-task=10 --pty bash
+
+# 2. Load required modules (must be done inside compute node)
+module load gcc/10.4.0 cuda/12.1.1
+
+# 3. Generate segmentation labels (respaninternal)
+/projappl/project_2019059/respan/envs/respaninternal/bin/python \
+    /scratch/project_2019059/respan/code/ResPan/run_nnunet_only.py
+
+# 4. Run RESPAN spine analysis (respandev, labels exist so nnU-Net skipped)
+/projappl/project_2019059/respan/envs/respandev/bin/python \
+    /scratch/project_2019059/respan/code/ResPan/run_respan.py
+```
+
+For overnight jobs, use SLURM scripts (`slurm_analysis.sh`, `slurm_nnunet.sh`, etc.) with `sbatch`.
+
+---
+
+### First Successful GPU Run
+
+Both test datasets ran successfully end-to-end on the A100:
+
+| Dataset | Spines | Analysis time |
+|---|---|---|
+| `C2-HippoDIV14_control.lif - Series005` (hippo) | 19 detected, 19 after filters | 1.07 min |
+| `140325_DIV17cx_LTP30min_0001` (cortical) | 18 detected, 12 after volume filter | 0.12 min |
+
+GPU utilisation: 40 GB A100, mesh analysis used ~0.06% of GPU memory (small test images). CARE restoration was disabled (`restore: False`) so TensorFlow ran CPU-only — the TF "could not find cuda drivers" warning is harmless.
+
+---
+
+### Key Files Added
+
+| File | Purpose |
+|---|---|
+| `f:\ResPan\run_nnunet_only.py` | Mahti-only: nnU-Net segmentation step (respaninternal) |
+| `f:\ResPan\env_dev.yaml` | respandev tykky environment spec |
+| `f:\ResPan\slurm_analysis.sh` | SLURM batch script for analysis |
+| `f:\ResPan\slurm_nnunet.sh` | SLURM batch script for nnU-Net training |
+| `f:\ResPan\slurm_care.sh` | SLURM batch script for CARE training |
+| `f:\ResPan\slurm_selfnet.sh` | SLURM batch script for SelfNet training |
+
+---
+
+### Conclusions
+
+1. **The full pipeline runs on Mahti A100.** Both analysis and segmentation work end-to-end.
+2. **tykky requires separate commands for each environment.** No nested containers — respaninternal and respandev must be called sequentially, not from within each other.
+3. **CUDA 12.x must match the compute node driver.** `cupy-cuda11x` fails on Mahti (`cuda/11.5.0` only has `libnvrtc.so.11.5`, not `11.2`). Use `cupy-cuda12x` and load `gcc/10.4.0 cuda/12.1.1`.
+4. **`__file__`-relative paths make scripts portable.** No manual path editing needed between Windows and Mahti.
+5. **Web dashboard is the easiest file transfer method.** Avoids SSH key complexities on Windows entirely.
+
+---
+
+### Next Steps
+
+- [ ] Run `run_nnunet_only.py` on new images to generate labels, then run full analysis
+- [ ] Run nnU-Net training on Mahti with more annotated stacks
+- [ ] Set up VS Code Remote-SSH connection to Mahti for direct editing
+- [ ] Collect more training images for nnU-Net and CARE retraining
+
+---
+
+## Day 8 — 2026-05-04
+
+### Goal
+
+Fix `run_nnunet_only.py` on Mahti so that nnU-Net inference actually runs on the GPU end-to-end for all images without crashing.
+
+---
+
+### Problems Encountered and Fixed (in order)
+
+#### 1. PyTorch 2.6 `weights_only=True` default breaks checkpoint loading
+
+**Error:**
+```
+_pickle.UnpicklingError: Weights only load failed.
+WeightsUnpickler error: Unsupported global: GLOBAL numpy._core.multiarray.scalar
+```
+
+**Cause:** PyTorch 2.6 changed the default of `torch.load` from `weights_only=False` to `weights_only=True`. The nnU-Net checkpoint was saved with an older PyTorch and contains numpy globals, which are blocked by the new default.
+
+**Fix:** Monkey-patch `torch.load` in `run_nnunet_only.py` before importing nnunetv2 to restore the pre-2.6 default:
+```python
+import torch as _torch
+_orig_load = _torch.load
+_torch.load = lambda *a, **kw: _orig_load(*a, **{**{'weights_only': False}, **kw})
+```
+This restores the old default while still respecting any explicit `weights_only=True` caller passes.
+
+---
+
+#### 2. PyTorch compiled for CUDA 13.0 — driver only supports CUDA 12.2
+
+**Error:**
+```
+RuntimeError: The NVIDIA driver on your system is too old (found version 12020).
+```
+
+**Cause:** The `respaninternal` tykky container had PyTorch 2.11.0+cu130 (compiled for CUDA 13.0). The Mahti compute node driver only supports up to CUDA 12.2 (driver version 12020). This was never detected before because nnU-Net never successfully initialised.
+
+**Fix:** Rebuilt `respaninternal` with CUDA 12.1-compatible PyTorch:
+```bash
+module load tykky
+echo 'pip install torch --index-url https://download.pytorch.org/whl/cu121 --force-reinstall' > ~/fix_torch.sh
+conda-containerize update --post-install ~/fix_torch.sh /projappl/project_2019059/respan/envs/respaninternal
+```
+
+This also left `torchvision 0.26.0` (which expects `torch==2.11.0`) mismatched. Fixed immediately after:
+```bash
+echo 'pip install torchvision --index-url https://download.pytorch.org/whl/cu121 --force-reinstall' > ~/fix_torchvision.sh
+conda-containerize update --post-install ~/fix_torchvision.sh /projappl/project_2019059/respan/envs/respaninternal
+```
+
+Result: `torch 2.5.1+cu121` + `torchvision 0.20.1+cu121` — consistent, no conflicts.
+
+---
+
+#### 3. `torch.set_num_interop_threads` crash on second image
+
+**Error:**
+```
+RuntimeError: Error: cannot set number of interop threads after parallel work has started or set_num_interop_threads called
+```
+
+**Cause:** `predict_entry_point()` calls `torch.set_num_interop_threads(1)` internally. PyTorch only allows this once per process. The original script called `predict_entry_point()` inside a loop — once per image — so the second call crashed.
+
+**Fix:** Replaced `predict_entry_point()` with direct use of `nnUNetPredictor`:
+- Initialise the predictor **once** before the loop (loads the model into GPU memory once)
+- Call `predictor.predict_from_files()` for each image inside the loop
+- Split the loop into two phases: prepare all images first, then predict all
+
+The new structure in `run_nnunet_only.py`:
+```
+Phase 1 — for each image:
+    if labels exist → skip
+    else → prepare_image()  (resample, save to nnunet_input/)
+    append to to_predict list
+
+Phase 2 — load model once (nnUNetPredictor.initialize_from_trained_model_folder)
+    for each image in to_predict:
+        predictor.predict_from_files(prep_dir, labels_dir, ...)
+        clean up non-.tif outputs
+```
+
+Also added `MODEL_DIR` to the imports from `run_respan` so the predictor can find the model folder directly without reconstructing the path from `NNUNET_RESULTS + DATASET_ID`.
+
+---
+
+### Final Successful Run
+
+Both test images segmented and analysed successfully on the Mahti A100:
+
+| Image | Spines (after filters) | Analysis time |
+|---|---|---|
+| `C2-HippoDIV14_control.lif - Series005` (hippo, 28 planes) | 19 | 0.15 min |
+| `140325_DIV17cx_LTP30min_0001` (cortical, 15 planes) | 12 | 0.03 min |
+
+---
+
+### respaninternal Environment State (after Day 8 fixes)
+
+| Package | Version |
+|---|---|
+| torch | 2.5.1+cu121 |
+| torchvision | 0.20.1+cu121 |
+| nnunetv2 | as installed (editable from `nnUNet/`) |
+
+CUDA module required at runtime: `module load gcc/10.4.0 cuda/12.1.1`
+
+---
+
+### Conclusions
+
+1. **PyTorch 2.6+ breaks nnU-Net checkpoint loading** unless `weights_only=False` is patched in before nnunetv2 is imported. Fixed in `run_nnunet_only.py` with a one-line monkey-patch.
+2. **The respaninternal environment had PyTorch compiled for CUDA 13.0**, which the Mahti driver (CUDA 12.2) cannot run. Always verify `torch.version.cuda` matches the compute node driver before running.
+3. **`predict_entry_point()` cannot be called more than once per process.** Use `nnUNetPredictor` directly and initialise it once per run.
+4. **The full Mahti pipeline is now stable.** `run_nnunet_only.py` (respaninternal) → `run_respan.py` (respandev) works end-to-end.
+
+---
+
+### nnU-Net Training on Mahti (same day)
+
+`train_nnunet.py` was updated to call nnunetv2 entry points directly on Mahti (same container-nesting fix as inference). Tested with 2 training images — training runs correctly on A100 at ~20s/epoch:
+
+| Epoch | Spine Dice | Dendrite Dice |
+|---|---|---|
+| 0 | 0.66 | 0.88 |
+| 5 | 0.88 | 0.95 |
+| 8 | 0.91 | 0.96 |
+
+`train_care.py` and `train_selfnet.py` were also updated with the same Mahti-compatible pattern (`runpy.run_path` for SelfNet, direct TF import for CARE) but not tested — no training data available on Mahti for those two.
+
+---
+
+### Next Steps
+
+- [ ] Run the pipeline on the full datasets (180626 cortical overview stacks, 280622 hippo)
+- [ ] Submit overnight batch jobs via SLURM (`slurm_nnunet.sh`, `slurm_analysis.sh`)
+- [ ] Collect more annotated stacks for nnU-Net retraining
+- [ ] Test CARE and SelfNet training on Mahti once paired data is available

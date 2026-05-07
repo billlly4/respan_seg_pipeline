@@ -38,7 +38,7 @@ It learns from the relationship between sharp XY structure and degraded axial ap
 - Same XY pixel size
 - Same Z step size (therefore same XY/Z ratio / scale parameter)
 - Same modality / PSF family
-- Same preprocessing convention
+- Same preprocessing convention(without noise, getting from the CARE model)
 
 **What the data needs:**
 - A 3D structural stack where XY is clearly better than Z
@@ -55,17 +55,20 @@ error message, just an empty array.
 
 The rule:
 ```
-rescaled_Z     = int(original_Z × (1 / scale))   must be ≥ 64
+scale = input_resXY / input_resZ 
+=> example:
+ 0.10 / 0.50 = 0.2
+
+rescaled_Z     = int(original_Z × (1 / scale))   must be ≥ 64    
+=> example: 
+rescaled_Z = int(20 × (1 / 0.2))
+           = int(20 × 5)
+           = 100   ✓  (≥ 64, passes)
+
 minimum_Z      = ceil(64 × scale)
+
+the difference between z and xy is more than 3, we might get bad results.
 ```
-
-Examples:
-
-| scale | stretch (1/scale) | min original Z |
-|-------|-------------------|----------------|
-| 0.32  | ×3.125            | ceil(20.48) = 21 |
-| 0.41  | ×2.439            | ceil(26.24) = 27 |
-| 0.50  | ×2.000            | ceil(32.00) = 32 |
 
 Where the rule lives in the code — it is not an explicit check, it is an
 accidental consequence of two lines in two different functions:

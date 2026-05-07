@@ -1,0 +1,29 @@
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    - tensorflow==2.13.0
+    - csbdeep
+    - cupy-cuda12x
+    - tifffile
+    - pyyaml
+    - scikit-image
+    - scipy
+    - "numpy<2.0"
+    - pandas
+    - scikit-learn
+    - matplotlib
+    - patchify
+    - psutil
+    - "dask[distributed]"
+    - dask-image
+    - numba
+    - numcodecs
+    - ome-zarr
+    - zarr
+    - trimesh
+    - nibabel
+    - memory-profiler

@@ -39,6 +39,7 @@ PARAMETER MEANINGS:
 """
 
 import os
+from pathlib import Path
 import sys
 import argparse
 import logging
@@ -46,9 +47,10 @@ import logging
 # ---------------------------------------------------------------------------
 # Defaults  (RESPAN GUI values; use small values here for fast pipeline test)
 # ---------------------------------------------------------------------------
+_BASE = Path(__file__).resolve().parent
 DEFAULTS = dict(
-    data          = r'f:\ResPan\CARE_training\data',
-    output        = r'f:\ResPan\CARE_training\output',
+    data          = str(_BASE / 'CARE_training' / 'data'),
+    output        = str(_BASE / 'CARE_training' / 'output'),
     name          = 'care_test_3D',
 
     patch_size    = '8,64,64',   # GUI default: 8,64,64
@@ -63,7 +65,7 @@ DEFAULTS = dict(
     image_type      = '3D',
 )
 
-RESPAN_ROOT = r'f:\ResPan\cloned_respan\RESPAN'
+RESPAN_ROOT = str(Path(__file__).resolve().parent / 'cloned_respan' / 'RESPAN')
 
 
 # ---------------------------------------------------------------------------
