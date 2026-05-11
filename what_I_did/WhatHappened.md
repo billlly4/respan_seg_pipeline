@@ -1191,3 +1191,161 @@ CUDA module required at runtime: `module load gcc/10.4.0 cuda/12.1.1`
 - [ ] Submit overnight batch jobs via SLURM (`slurm_nnunet.sh`, `slurm_analysis.sh`)
 - [ ] Collect more annotated stacks for nnU-Net retraining
 - [ ] Test CARE and SelfNet training on Mahti once paired data is available
+
+---
+
+## Day 9 — 2026-05-07
+
+### Goal
+
+Three parallel tracks:
+1. Upgrade to **RESPAN v1.5** — read all new documentation, understand what changed.
+2. Add **fine-tuning support** to `train_nnunet.py` (start from Model 1Bv2 pretrained weights instead of from scratch).
+3. Run RESPAN analysis on the **Ellinoora cortical crops** (new dataset, 10 crops) to generate auto-predicted labels as a starting point for Fiji correction and future fine-tuning.
+
+---
+
+### RESPAN v1.5 — What Changed
+
+Read all v1.5 documentation: `cloned_respan/README.md`, `cloned_respan/UPDATES.md`, `cloned_respan/docs/Fine_Tuning_Guide.md`, and the full pipeline flow diagram (`docs/pipeline_flow.mmd`).
+
+Key v1.5 changes relevant to this project:
+
+- **New spine types:** filopodia, partial-spine, multi-head — the label output now carries these type strings in the `spine_type` column of the detected spines CSV.
+- **Chunked zarr processing:** very large images (55 GB+) can now be processed in chunks via dask/ome-zarr without loading everything into RAM. Not relevant for the current small crops but important for full-FOV data.
+- **Fine-Tuning Guide added:** a 10-step workflow document (`Fine_Tuning_Guide.md`) explaining how to start from pretrained Model 1Bv2 weights. The fine-tuning capability itself existed before v1.5 — the guide is new.
+- **Model 1Bv2 (Dataset226)** is the recommended starting point for fine-tuning. Label scheme: background=0, dendrite=1, spine_core=2, spine_edge=3, spine_neck=4, soma=5, axon=6, ignore=7.
+
+Key finding on label scheme for fine-tuning: you can use a **subset** of Dataset226's integers (e.g. annotate only dendrite/spine_core/spine_edge/spine_neck, leave soma and axon as 0). The FAQ restriction in the GitHub issues is about mixing incompatible model families (1A vs 1Bv2), not about using fewer classes. The segmentation head is always re-initialised regardless.
+
+Key finding on spacing: Dataset226's `dataset_fingerprint.json` shows `spacings: [[1,1,1], ...]` for all training images. RESPAN normalises voxel spacing to (1,1,1) before handing images to nnU-Net — the Tiff3DIO reader ignores physical metadata. This means fine-tuning at any input resolution is valid; RESPAN does the rescaling.
+
+---
+
+### Fine-Tuning Support Added to `train_nnunet.py`
+
+**Major rewrite** adding four new commands alongside the existing from-scratch pipeline:
+
+| Command | What it does |
+|---|---|
+| `finetune_plan` | Transfer plans from Dataset226 → Dataset001, then preprocess |
+| `finetune_train` | Train with `-pretrained_weights` pointing to Model 1Bv2 checkpoint |
+| `finetune` | All three steps: `setup` (with FINETUNE_LABELS) + `finetune_plan` + `finetune_train` |
+
+**New constants added:**
+
+```python
+FINETUNE_LABELS = {
+    "background": 0, "dendrite": 1, "spine_core": 2,
+    "spine_edge": 3, "spine_neck": 4,
+}
+SOURCE_DATASET_ID  = 226
+SOURCE_MODEL_DIR   = _BASE / 'cloned_respan' / 'Dataset226_Global1Bv2_...'
+PRETRAINED_WEIGHTS = SOURCE_TRAINER_DIR / 'fold_all' / 'checkpoint_final.pth'
+```
+
+**`finetune_plan()` steps (in order):**
+1. Copy Dataset226 into `nnunet_training/results/` so `move_plans` can find it by ID
+2. Copy `plans.json` into `nnunet_training/preprocessed/Dataset226.../nnUNetPlans.json`
+3. `nnUNetv2_extract_fingerprint -d 1` — fingerprint the target dataset
+4. `nnUNetv2_move_plans_between_datasets -s 226 -t 1 -sp nnUNetPlans -tp nnUNetPlans`
+5. `nnUNetv2_preprocess -d 1 -plans_name nnUNetPlans -c 3d_fullres --verify_dataset_integrity`
+
+**`_run_cmd()` helper** added — cross-platform entry point runner. On Mahti: imports and calls directly (no subprocess nesting). On Windows: runs as subprocess via `_run()`. Used by all four plan/preprocess/train functions.
+
+**`setup()` now accepts a `labels` parameter** so it can be called with either `LABELS` (from-scratch) or `FINETUNE_LABELS` (fine-tune).
+
+Recommended epochs for fine-tuning: **300–500** for 10–20 annotated cases. Stop early with Ctrl+C, then promote `checkpoint_latest.pth → checkpoint_final.pth` so RESPAN can find it.
+
+---
+
+### `run_respan.py` Updates
+
+Three fixes from the v1.5 compatibility audit:
+
+1. **`_ON_MAHTI` flag** added at module level — used to switch behaviour in `run_nnunet()` and error messages.
+2. **Mahti guard in `run_nnunet()`** — on Mahti, the function prints a clear error and exits if called without pre-existing labels (container nesting is still not supported; users must call `run_nnunet_only.py` first).
+3. **`check_cupy()` error message** made cross-platform (shows correct conda path for Mahti vs Windows).
+
+**`--model` CLI argument added** to `main()`:
+
+```
+python run_respan.py --model F:\ResPan\cloned_respan\Dataset226_...  [dataset_names...]
+```
+
+Uses `argparse`. Parses the dataset ID from the folder name via regex (`Dataset(\d+)`). Overrides `MODEL_DIR`, `NNUNET_RESULTS`, and `DATASET_ID` globally. Without `--model`, defaults to `MODEL_DIR` set in the script header.
+
+---
+
+### Ellinoora Dataset — Analysis Run
+
+**Data:** 10 cortical neuron crops from Ellinoora, channel 2 only (Lifeact-EGFP structural channel).
+- **Location:** `F:\ResPan\images\ellinoora\` (flat layout — TIFs directly in the folder)
+- **Resolution:** 132.6 nm XY / 410 nm Z (coarser than Model 1Bv2's 65 nm / 150 nm)
+- **Image shape:** 14–22 Z slices × ~185×100 XY pixels, uint16
+- **Conditions:** LTP30min (crops 1–8) and LTPctrl (crops 9–10)
+
+**Settings file created:** `F:\ResPan\images\ellinoora\Analysis_Settings.yaml` with `input_resXY: 0.1326`, `input_resZ: 0.410`, `model_resXY: 0.065`, `model_resZ: 0.150`.
+
+**Run command:**
+```
+C:\Users\ARASH\Anaconda3\envs\respandev\python.exe  f:\ResPan\run_respan.py  --model  F:\ResPan\cloned_respan\Dataset226_Global1Bv2_XY65nm_Z150nm_CARE-Aug_spinecore_neck_dend_soma_axon_V6  ellinoora
+```
+
+**Results — all 10 crops completed successfully:**
+
+| Crop | Z slices | Spines detected | Label classes present |
+|---|---|---|---|
+| crop1 | 15 | 8 | dendrite, spine_core, spine_edge, spine_neck |
+| crop2 | 15 | 13 | dendrite, spine_core, spine_edge, spine_neck |
+| crop3 | 15 | 16 | dendrite, spine_core, spine_edge, spine_neck, axon |
+| crop4 | 18 | 15 | dendrite, spine_core, spine_edge, spine_neck |
+| crop5 | 18 | 18 | dendrite, spine_core, spine_edge, spine_neck |
+| crop6 | 14 | 21 | dendrite, spine_core, spine_edge, spine_neck |
+| crop7 | 14 | 11 | dendrite, spine_core, spine_edge, spine_neck |
+| crop8 | 14 | 20 | dendrite, spine_core, spine_edge, spine_neck |
+| crop9 | 16 | 10 | dendrite, spine_core, spine_edge, spine_neck |
+| crop10 | 22 | 9 | dendrite, spine_core, spine_edge, spine_neck |
+| **Total** | | **141** | |
+
+Per-crop output structure:
+```
+images/ellinoora/<crop-name>/
+    images/          ← hardlink to original TIF
+    nnunet_input/    ← rescaled TIF passed to nnU-Net
+    labels/          ← nnU-Net prediction (uint8, values 0–4, 6)
+    Tables/          ← detected_spines.csv, dendrite_summary.csv, neck_path_confidence.csv
+    Validation_Data/Validation_MIPs/  ← 8-channel MIP composite TIFs
+    Analysis_Settings.yaml
+    RESPAN_analysis.log
+```
+
+Label integers in output files: 0=background, 1=dendrite, 2=spine_core, 3=spine_edge, 4=spine_neck. Crop3 also has label 6 (axon) — to be relabelled as 0 or 1 during Fiji correction.
+
+---
+
+### SelfNet Assessment — Not Feasible on These Crops
+
+SelfNet requires `original_Z >= ceil(64 × scale)` to form 64×64 XZ patches. At scale = 0.1326/0.410 = 0.323, the minimum is **21 Z planes**. Only crop10 (22 slices) meets this threshold; the other 9 crops (14–18 slices) cannot even start SelfNet. Additionally, all 10 crops come from the same imaging session, which is insufficient diversity for a generalised SelfNet model.
+
+**Decision: skip SelfNet training on these crops.** SelfNet is worth training when full-FOV stacks with ≥30 Z planes from multiple sessions are available.
+
+---
+
+### Conclusions
+
+1. **Model 1Bv2 (Dataset226) works on Ellinoora data** despite the 2× XY / 2.7× Z resolution gap. 141 spines detected across 10 crops with a mix of spine types including partial-spine.
+2. **Fine-tuning is the right next step.** The predicted labels are a good starting point; correcting them in Fiji and fine-tuning will teach the model to work at 132.6/410 nm specifically.
+3. **FINETUNE_LABELS must be a subset of Dataset226's integers.** Do not add new integers or change existing ones — only annotate the structures you have (dendrite, spine_core, spine_edge, spine_neck), leave everything else as 0.
+4. **Crop3 has an axon prediction (label 6).** Relabel as 0 (background) or 1 (dendrite) depending on what the raw image shows.
+5. **The `--model` flag makes it easy to switch models at the command line** without editing the script.
+
+---
+
+### Next Steps
+
+- [ ] Open label TIFs + raw TIFs side-by-side in Fiji and correct auto-predicted labels
+- [ ] Copy corrected pairs to `f:\ResPan\training_data\imagesTr\` and `training_data\labelsTr\`
+- [ ] Get ~10 more crops from Ellinoora (target: 20 total, ideally ≥25 Z slices each)
+- [ ] Run `python train_nnunet.py finetune` once enough corrected data is available (300–500 epochs recommended)
+- [ ] Upload updated `run_respan.py` and `train_nnunet.py` to Mahti

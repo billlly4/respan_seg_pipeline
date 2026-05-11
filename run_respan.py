@@ -61,6 +61,7 @@ MODEL_DIR = str(
 _mahti_py = '/projappl/project_2019059/respan/envs/respaninternal/bin/python'
 _win_py   = r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe'
 RESPANINTERNAL_PYTHON = _mahti_py if os.path.exists(_mahti_py) else _win_py
+_ON_MAHTI = os.path.exists(_mahti_py)
 
 NNUNET_RESULTS = str(Path(MODEL_DIR).parent)
 DATASET_ID     = '226'
@@ -204,7 +205,13 @@ def run_nnunet(prep_dir, labels_dir, checkpoint_name='checkpoint_best.pth'):
     Run nnU-Net predict_entry_point() as a subprocess under respaninternal.
     This avoids the torch 2.6.0 hang that occurs when importing nnunetv2
     inside respandev.
+    On Mahti, tykky containers cannot be nested — run run_nnunet_only.py first.
     """
+    if _ON_MAHTI:
+        print('\nERROR: On Mahti, run_respan.py cannot call nnU-Net directly.')
+        print('  Run run_nnunet_only.py with respaninternal first to generate labels,')
+        print('  then re-run run_respan.py — it will skip the nnU-Net step automatically.')
+        sys.exit(1)
     os.makedirs(labels_dir, exist_ok=True)
 
     runner_script = (
@@ -391,9 +398,12 @@ def check_cupy():
         print('\n' + '!' * 65)
         print('ERROR: CuPy GPU check failed.')
         print(f'  {e}')
-        print('\nFIX: run with respandev Python directly:')
-        print('  C:\\Users\\ARASH\\Anaconda3\\envs\\respandev\\python.exe '
-              'f:\\ResPan\\run_respan.py')
+        print('\nFIX: run this script with the respandev Python:')
+        if _ON_MAHTI:
+            _respandev = '/projappl/project_2019059/respan/envs/respandev/bin/python'
+            print(f'  {_respandev} {__file__}')
+        else:
+            print(f'  C:\\Users\\ARASH\\Anaconda3\\envs\\respandev\\python.exe {__file__}')
         print('!' * 65 + '\n')
         sys.exit(1)
 
@@ -482,12 +492,42 @@ def process_image(img_path, out_dir, yaml_src, cfg, checkpoint_name='checkpoint_
 # ---------------------------------------------------------------------------
 
 def main():
-    # Optional: restrict to named datasets passed as CLI arguments
-    filter_names = sys.argv[1:] if len(sys.argv) > 1 else None
+    import argparse
+    import re
+
+    parser = argparse.ArgumentParser(
+        description='RESPAN Unified Pipeline',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        '--model', default=None, metavar='PATH',
+        help='Path to nnU-Net model folder (e.g. Dataset226_... or Dataset001_Spines). '
+             'Overrides the default MODEL_DIR. Dataset ID is parsed from the folder name.',
+    )
+    parser.add_argument(
+        'datasets', nargs='*',
+        help='Dataset folder names to process (default: all found under images/).',
+    )
+    args = parser.parse_args()
+
+    filter_names = args.datasets or None
+
+    # Allow overriding the model from the command line
+    global MODEL_DIR, NNUNET_RESULTS, DATASET_ID
+    if args.model:
+        MODEL_DIR      = str(Path(args.model).resolve())
+        NNUNET_RESULTS = str(Path(MODEL_DIR).parent)
+        m = re.match(r'Dataset(\d+)', Path(MODEL_DIR).name)
+        if not m:
+            print(f'ERROR: --model folder name must start with Dataset<ID>_...')
+            print(f'  Got: {Path(MODEL_DIR).name}')
+            sys.exit(1)
+        DATASET_ID = m.group(1)
 
     print('=' * 65)
     print('RESPAN Unified Pipeline')
     print(f'Scanning: {DATASETS_ROOT}')
+    print(f'Model   : {MODEL_DIR}')
     print('=' * 65)
 
     check_cupy()

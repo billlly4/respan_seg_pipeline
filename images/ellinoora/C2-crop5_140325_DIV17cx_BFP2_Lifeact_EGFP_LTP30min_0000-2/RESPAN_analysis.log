@@ -1,0 +1,93 @@
+16:00:00 INFO: Analyzing spines...
+16:00:00 INFO:  Analyzing image 1 of 1 
+  Raw Image: C2-crop5_140325_DIV17cx_BFP2_Lifeact_EGFP_LTP30min_0000-2.tif & Label Image: C2-crop5_140325_DIV17cx_BFP2_Lifeact_EGFP_LTP30min_0000-2.tif
+16:00:00 INFO:   Raw shape: (18, 185, 100) & Labels shape: (18, 185, 100)
+16:00:00 INFO:   Raw image size: 0.001 GB
+16:00:00 INFO:     [VRAM] pipeline_start: 1.08/6.44 GB used (free: 5.37 GB, pool: 0.00 GB)
+16:00:00 INFO:    Filtering dendrites...
+16:00:00 INFO:     Processing 1 of 1 detected dendrites larger than minimum volume threshold of 138 voxels
+16:00:00 INFO:     [VRAM] after_filter_dendrites: 1.08/6.44 GB used (free: 5.37 GB, pool: 0.00 GB)
+16:00:00 INFO:    Calculating distances from dendrites...
+16:00:00 INFO:     [VRAM] after_distance_transforms: 1.08/6.44 GB used (free: 5.37 GB, pool: 0.00 GB)
+16:00:00 INFO:    Calculating dendrite skeleton...
+16:00:00 INFO:     Time taken for initial processing: 0.31 seconds
+
+16:00:00 INFO:    Analyzing spines...
+16:00:00 INFO:     Using model type Dendrites, Spine Cores, Spine Membranes, Necks, Soma, and Axons
+16:00:00 INFO:     Analyzing spines using cores and membranes...
+16:00:00 INFO:     Filtered 2 tiny nnU-Net cores (<3 vox) before watershed.
+16:00:00 INFO:     Recovered 3 orphan-membrane spines (nnU-Net predicted membrane without core).
+16:00:00 INFO:     Voxels unassigned to spines: 0.
+16:00:00 INFO:     Making initial morphology and intensity measurements for channel 1...
+16:00:00 INFO:     Measuring distances to dendrite/s...
+16:00:00 INFO:      Total putative spines: 23
+16:00:00 INFO:      Spines after volume filtering = 20 
+16:00:00 INFO:      Distance threshold: 30.2 voxels. dist_to_dendrite range: [1.00, 15.00]
+16:00:00 INFO:      Spines after distance filtering = 20 
+16:00:00 INFO:      Time taken for initial spine detection: 0.14 seconds
+16:00:00 INFO:      Tiny spine-head filter: 0 labels with <=2 voxels (kept 20).
+16:00:00 INFO:     [VRAM] before_neck_analysis: 1.08/6.44 GB used (free: 5.37 GB, pool: 0.00 GB)
+16:00:00 INFO: 
+    Calculating spine necks...
+16:00:00 INFO:      Associating spines with necks...
+16:00:01 INFO:        Per-target-CC association: 14 target CCs — 14 assigned, 0 no-reference-within-12.0µm, 0 beyond-cap (14 GPU + 0 CPU EDT calls)
+16:00:01 INFO:        Voxels: 94 assigned / 0 dropped
+16:00:01 INFO:      Extending necks to dendrites...
+16:00:01 INFO:      Finding spine necks using GPU...
+16:00:01 INFO:        extend_objects_GPU flush cadence: every 5 spines (GPU=6.0 GB, 20 total spines)
+16:00:01 INFO:       Processed 20/20 objects in 0.2s (0.010s/spine)
+16:00:01 INFO:      Associating extended necks with remaining necks...
+16:00:01 INFO:        No target components found.
+16:00:01 INFO:        Bridged spine<->neck gaps on 3 spines (5 voxels added, 2 still split)
+16:00:01 INFO:      Signal-aware pathfinding bridge for 2 still-split spines...
+16:00:01 INFO:        Bridge GPU policy: margin=6.0 µm, flush every 5 spines (GPU=6.0 GB)
+16:00:01 INFO:        Pathfinder bridge: 1/2 gapped spines connected (37 voxels added, 0 skipped) in 0.0s
+16:00:01 INFO:        nnU-Net neck preservation: 94/94 (100.0%)
+16:00:01 INFO:        Dropped disconnected neck fragments: 2/14 labels cleaned (39 orphan voxels removed). Sample: [9,19].
+16:00:01 INFO:        Dropped wrong-direction neck fragments: 2/2 labels cleaned (2 CCs, 5 voxels — kept CC closest to dendrite). Sample: [1,8].
+16:00:01 INFO:        Wrote neck confidence scores to F:/ResPan/images/ellinoora/C2-crop5_140325_DIV17cx_BFP2_Lifeact_EGFP_LTP30min_0000-2/Tables/neck_path_confidence.csv (14 rows).
+16:00:01 INFO:        Spurious-neck filter: 2/14 necks flagged (mode=neck_only; thresholds length>1.0µm, nnU-Net<0.2; 59 neck voxels removed) in 0.0s
+16:00:01 INFO:      Time taken for neck generation: 1.30 seconds
+16:00:01 INFO:     [VRAM] after_neck_analysis: 1.08/6.44 GB used (free: 5.37 GB, pool: 0.00 GB)
+16:00:01 INFO:        Classified 2 spurious-flagged spines as partial-spine (neck dropped, head retained).
+16:00:01 INFO:        Partial spines detected: 3 spines with necks not reaching dendrite (min dd > 2.0 vox, after filopodia exclusion). Will be kept with neck metrics zeroed (keep_partial_spines=True) or dropped (False).
+16:00:01 INFO:     3D overlap audit (all should be 0 for disjoint labels):
+16:00:02 INFO:     Calculating neuron statistics...
+16:00:02 INFO:     Calculating dendrite statistics...
+16:00:02 INFO:       Complete.
+16:00:02 INFO:     Calculating spine dendrite ID and geodesic distance...
+16:00:02 INFO:        Creating KDTree from skeletonized dendrites...
+16:00:02 INFO:        Time taken: 0.01 s
+16:00:02 INFO:        Matching and relabeling objects...
+16:00:02 INFO:        Time taken: 0.00 s
+16:00:02 INFO:        Computing geodesic distances...
+16:00:02 INFO:        Geodesic distance complete: 0.03 s
+16:00:02 INFO:        Original dendrite labels: 2
+16:00:02 INFO:        Original spine labels: 21
+16:00:02 INFO:        Labels after relabeling: 2
+16:00:02 INFO:      Complete.
+16:00:02 INFO:     [VRAM] before_mesh_analysis: 1.08/6.44 GB used (free: 5.37 GB, pool: 0.00 GB)
+16:00:02 INFO: 
+    Performing additional mesh measurements on spines in batches on GPU...
+16:00:02 INFO:        Total memory required for full multi-channel array: 0.01 GB
+16:00:02 INFO:        Total available GPU memory: 5.37 GB. Percentage of GPU memory required for array: 0.10%
+16:00:02 INFO:        Multi-channel GPU array created.
+16:00:02 INFO:        Using batch size of 18 spines...
+16:00:02 INFO:         Processing batch 1 of 2... (50% complete)
+16:00:02 INFO:         Processing batch 2 of 2... (100% complete)
+16:00:02 INFO:       Total time taken for mesh analysis: 0.45 seconds
+16:00:02 INFO:     Saving validation MIP image...
+16:00:02 INFO: 
+    Calculating final measurements...
+16:00:02 INFO:      Calculating additional spine head measurements...
+16:00:02 INFO:      Calculating additional whole spine measurements...
+16:00:02 INFO:      Calculating additional neck measurements...
+16:00:02 INFO:      Calculating final complete spine measurements...
+16:00:02 INFO:        Zeroed neck metrics for 3 partial-spine rows (13 neck_* columns); distance + head measurements retained.
+16:00:02 INFO:      Complete.
+
+16:00:02 INFO:  Processing complete for file C2-crop5_140325_DIV17cx_BFP2_Lifeact_EGFP_LTP30min_0000-2. Total spine analysis time: 0.05 minutes.
+---
+16:00:02 INFO:     [VRAM] pipeline_end: 1.08/6.44 GB used (free: 5.36 GB, pool: 0.00 GB)
+16:00:02 INFO:     [VRAM PEAK] 1.08 GB at 'pipeline_end'
+16:00:03 INFO: RESPAN analysis complete.
