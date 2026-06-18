@@ -81,6 +81,8 @@ FINETUNE_LABELS = {
     "spine_core":  2,
     "spine_edge":  3,
     "spine_neck":  4,
+    "soma":        5,
+    "axon":        6,
 }
 
 # ---------------------------------------------------------------------------
@@ -297,13 +299,22 @@ def finetune_plan():
         label=f'move_plans  Dataset{SOURCE_DATASET_ID:03d} -> Dataset{DATASET_ID:03d}',
     )
 
-    # E. Preprocess using the transferred plans (not a fresh fingerprint-based plan)
+    # E. Copy dataset.json to preprocessed folder.
+    #    In a normal plan_and_preprocess run nnU-Net does this automatically.
+    #    In our split workflow (extract_fingerprint → move_plans → preprocess)
+    #    the copy is missing, so we do it explicitly here.
+    dst_preproc_dataset = os.path.join(PREPROCESSED_DIR, DATASET_NAME, 'dataset.json')
+    shutil.copy2(os.path.join(DATASET_DIR, 'dataset.json'), dst_preproc_dataset)
+    print(f'  Copied dataset.json -> {dst_preproc_dataset}')
+
+    # F. Preprocess using the transferred plans (not a fresh fingerprint-based plan)
     _run_cmd(
         argv=[
             'nnUNetv2_preprocess',
             '-d', str(DATASET_ID),
             '-plans_name', 'nnUNetPlans',
             '-c', '3d_fullres',
+            '-np', '1',
             '--verify_dataset_integrity',
         ],
         entry_module='nnunetv2.experiment_planning.plan_and_preprocess_entrypoints',
@@ -378,8 +389,31 @@ def finetune_train():
 # Main
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
-    step = sys.argv[1] if len(sys.argv) > 1 else 'help'
+    import argparse
 
+    parser = argparse.ArgumentParser(description='nnU-Net Training Pipeline')
+    parser.add_argument('step', nargs='?', default='help',
+                        choices=['setup', 'plan', 'train', 'all',
+                                 'finetune_plan', 'finetune_train', 'finetune', 'help'])
+    parser.add_argument('--id',   type=int, default=None,
+                        help='Dataset ID (e.g. 42). Default: 1')
+    parser.add_argument('--name', type=str, default=None,
+                        help='Dataset name suffix (e.g. MySpines). Default: Spines')
+    args = parser.parse_args()
+
+    if args.id is not None:
+        DATASET_ID   = args.id
+        DATASET_NAME = f'Dataset{DATASET_ID:03d}_{args.name or "Spines"}'
+        DATASET_DIR  = os.path.join(RAW_DIR, DATASET_NAME)
+        IMAGES_TR    = os.path.join(DATASET_DIR, 'imagesTr')
+        LABELS_TR    = os.path.join(DATASET_DIR, 'labelsTr')
+    elif args.name is not None:
+        DATASET_NAME = f'Dataset{DATASET_ID:03d}_{args.name}'
+        DATASET_DIR  = os.path.join(RAW_DIR, DATASET_NAME)
+        IMAGES_TR    = os.path.join(DATASET_DIR, 'imagesTr')
+        LABELS_TR    = os.path.join(DATASET_DIR, 'labelsTr')
+
+    step = args.step
     if step == 'setup':
         setup()
     elif step == 'plan':

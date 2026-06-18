@@ -132,8 +132,8 @@ def main():
             logger.error(f'Image not found: {ip}')
             sys.exit(1)
 
-    # SelfNet scans input_dir for all .tif files — put all selected images in
-    # a clean working folder so only these images are processed.
+    # Put images in a clean workdir so no unrelated .tif files interfere.
+    # SelfNet_Model_Training.py loops over all .tif files it finds there.
     work_dir   = os.path.join(args.output, args.name + '_workdir')
     output_dir = os.path.join(args.output, args.name)
     os.makedirs(work_dir,   exist_ok=True)

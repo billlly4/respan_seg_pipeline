@@ -31,6 +31,7 @@ HOW TO RUN:
 """
 
 import os
+import re
 import sys
 import ast
 import types
@@ -49,14 +50,19 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 # ---------------------------------------------------------------------------
 _BASE = Path(__file__).resolve().parent
 
-DATASETS_ROOT = str(_BASE / 'images')
+DATASETS_ROOT = str(_BASE)
 RESPAN_ROOT   = str(_BASE / 'cloned_respan')
 NNUNET_REPO   = str(_BASE / 'nnUNet')
 
-MODEL_DIR = str(
-    _BASE / 'cloned_respan'
-    / 'Dataset226_Global1Bv2_XY65nm_Z150nm_CARE-Aug_spinecore_neck_dend_soma_axon_V6'
-)
+def _find_model(model_folder):
+    """Return the path to the first Dataset* subfolder inside model_folder."""
+    p = Path(model_folder)
+    candidates = sorted(d for d in p.iterdir() if d.is_dir() and d.name.startswith('Dataset'))
+    if not candidates:
+        raise FileNotFoundError(f'No Dataset* folder found in {model_folder}')
+    return str(candidates[0])
+
+MODEL_DIR = _find_model(_BASE / 'images_analysis' / 'model')
 
 _mahti_py = '/projappl/project_2019059/respan/envs/respaninternal/bin/python'
 _win_py   = r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe'
@@ -64,7 +70,8 @@ RESPANINTERNAL_PYTHON = _mahti_py if os.path.exists(_mahti_py) else _win_py
 _ON_MAHTI = os.path.exists(_mahti_py)
 
 NNUNET_RESULTS = str(Path(MODEL_DIR).parent)
-DATASET_ID     = '226'
+_m = re.match(r'Dataset(\d+)', Path(MODEL_DIR).name)
+DATASET_ID = _m.group(1) if _m else '226'
 
 # 0-indexed channel that contains the structural morphology fill.
 # For single-channel TIFs this must be 0.
@@ -292,13 +299,33 @@ def _make_settings(cfg, out_dir):
     s.validation_scale     = cfg.get('validation_scale', (1, 1))
     s.validation_jpeg_comp = cfg.get('validation_jpeg_comp', 100)
 
-    # Feature flags
+    # Spine / neck filtering (all tunable from YAML)
+    s.recover_filopodia                  = bool(cfg.get('recover_filopodia',                  False))
+    s.dendrite_repair                    = bool(cfg.get('dendrite_repair',                    False))
+    s.dendrite_repair_max_dist_um        = float(cfg.get('dendrite_repair_max_dist_um',       2.0))
+    s.detect_multi_head_spines           = bool(cfg.get('detect_multi_head_spines',           False))
+    s.keep_partial_spines                = bool(cfg.get('keep_partial_spines',                True))
+    s.partial_spine_dist_threshold_vox   = float(cfg.get('partial_spine_dist_threshold_vox', 2.0))
+    s.min_spine_head_voxels              = int(cfg.get('min_spine_head_voxels',              2))
+    s.neck_direction_tolerance_um        = float(cfg.get('neck_direction_tolerance_um',       0.2))
+    s.spurious_exclude_mode              = str(cfg.get('spurious_exclude_mode',              'neck_only'))
+    s.spurious_nnunet_support_min        = float(cfg.get('spurious_nnunet_support_min',       0.2))
+    s.spurious_intensity_ratio_min       = float(cfg.get('spurious_intensity_ratio_min',      0.4))
+    s.spurious_path_length_min_um        = float(cfg.get('spurious_path_length_min_um',       1.0))
+    s.spurious_keep_head_if_flagged      = bool(cfg.get('spurious_keep_head_if_flagged',      False))
+    s.spurious_require_intensity         = bool(cfg.get('spurious_require_intensity',         False))
+    s.drop_disconnected_neck_fragments   = bool(cfg.get('drop_disconnected_neck_fragments',   True))
+    s.drop_wrong_direction_neck_fragments= bool(cfg.get('drop_wrong_direction_neck_fragments',True))
+    s.trim_necks_touching_other_spines   = bool(cfg.get('trim_necks_touching_other_spines',   False))
+
+    # Feature flags (internal — not normally changed)
     s.neck_generation        = True
-    s.second_pass            = False
-    s.save_val_data          = True
-    s.save_intermediate_data = False
-    s.mesh_analysis          = True
-    s.additional_logging     = False
+    s.second_pass                    = False
+    s.save_val_data                  = True
+    s.save_intermediate_data         = bool(cfg.get('save_spine_meshes',           False))
+    s.force_val_volume_materialize   = bool(cfg.get('save_validation_volumes',     False))
+    s.mesh_analysis                  = True
+    s.additional_logging     = bool(cfg.get('additional_logging', False))
     s.additional_logging_dev = False
     s.dask_enabled           = False
     s.resave_omezarr         = False
@@ -475,7 +502,7 @@ def process_image(img_path, out_dir, yaml_src, cfg, checkpoint_name='checkpoint_
         ch = logging.StreamHandler(sys.stdout)
         ch.setFormatter(fmt)
         logger.addHandler(ch)
-        fh = logging.FileHandler(log_path)
+        fh = logging.FileHandler(log_path, encoding='utf-8')
         fh.setFormatter(fmt)
         logger.addHandler(fh)
 

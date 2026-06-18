@@ -1349,3 +1349,820 @@ SelfNet requires `original_Z >= ceil(64 × scale)` to form 64×64 XZ patches. At
 - [ ] Get ~10 more crops from Ellinoora (target: 20 total, ideally ≥25 Z slices each)
 - [ ] Run `python train_nnunet.py finetune` once enough corrected data is available (300–500 epochs recommended)
 - [ ] Upload updated `run_respan.py` and `train_nnunet.py` to Mahti
+
+---
+
+## Day 10 — 2026-05-18/20
+
+### Goal
+
+Process 31 new crops from Ellinoora, manually correct their RESPAN-predicted labels in Fiji, and prepare a fine-tuning dataset.
+
+---
+
+### New Crops — Channel Extraction
+
+Received 31 new crops in `F:\ResPan\images\New files from Ellinoora (crops)\`. Two imaging sessions with different channel layouts:
+- Crops 1–24: 3-channel TIFs, fluorescence in channel 2 (index 1)
+- Crops 25+: 2-channel TIFs, fluorescence in channel 1 (index 0)
+
+Written Fiji macro `batch-convertor/extract_channel.ijm` that asks for: source folder, channel number (1-indexed), first crop number, last crop number. Parses crop number from filename. Saves single-channel TIFs to `extracted_chN/` subfolder. Verified pixel-exact match against manually extracted Fiji references (mean_abs_diff = 0).
+
+Result: 23 files in `extracted_ch2/`, 8 files in `extracted_ch1/`. Z depths range 14–27 planes.
+
+Metadata embedded by Fiji preserved: XY = 0.1326 µm, Z = 0.410 µm.
+
+---
+
+### RESPAN Run on New Crops
+
+19 crops selected for fine-tuning (those with most Z depth and best condition coverage) placed in `F:\ResPan\images\data_to_train\` with `Analysis_Settings.yaml`. Ran RESPAN with Model 1Bv2:
+
+```
+C:\Users\ARASH\Anaconda3\envs\respandev\python.exe f:\ResPan\run_respan.py data_to_train
+```
+
+---
+
+### Manual Label Correction in Fiji
+
+Workflow using two macros in `manual_fixing_labels/imageJ_plugins/`:
+
+1. **Macro 1** (`1_Labels_to_Channels_for_Annotation-v2.ijm`): converts integer label TIF → multi-channel TIF (C1=raw, C2=dendrite, C3=spine_core, C4=spine_edge, C5=spine_neck, C6=soma, C7=axon). Requires imagesTr files to end in `_0000.tif`.
+2. Correct each channel in Fiji (paintbrush white to add, Alt+paintbrush to erase). Key Fiji tip: Alt+paintbrush erases only when background colour = black (press **D** to reset).
+3. **Macro 2** (`2_Channels_to_Labels_for_Training.ijm`): converts channels back to integer labels. Always use **MaxLabel = 6** — using lower values corrupts the last channel (leaves it as 255 instead of its true integer).
+
+20 crops processed through this workflow. 4 crops (12, 13, 19, 27) were too ambiguous/poor quality to correct reliably — excluded from training. Final corrected labels: **16 crops** in `manual_fixing_labels/training_data/labelsTr_2026_4_29/`.
+
+One crop (crop17) had corrupt values (8 and 9) from accidentally overlapping channel annotations — fixed by zeroing those 55 voxels.
+
+---
+
+### RESPAN Analysis Pipeline — Structural Changes
+
+`run_respan.py` refactored for the new workflow:
+
+| Change | Details |
+|---|---|
+| `DATASETS_ROOT` | Changed from `_BASE/images` to `_BASE` — `images_analysis` is now a sibling of the script, not inside `images/` |
+| `MODEL_DIR` | Changed from hardcoded Dataset226 path to `_find_model()` — dynamically finds the first `Dataset*` folder inside `images_analysis/model/` |
+| `DATASET_ID` | Now parsed from the model folder name via regex instead of hardcoded `'226'` |
+| All RESPAN settings | `_make_settings()` updated to read ALL meaningful RESPAN parameters from YAML (was hardcoding ~20 settings previously) |
+
+New folder structure for analysis:
+```
+F:\ResPan\images_analysis\
+    images\           <- TIF files + Analysis_Settings.yaml
+    model\
+        Dataset001_Spines\   <- fine-tuned model (any Dataset* name works)
+```
+
+`Analysis_Settings.yaml` expanded with full documented parameter set covering: spine filtering, dendrite repair, neck filtering, spurious neck handling, validation output flags.
+
+---
+
+### Key Findings
+
+- **Spine edge jumped from 0 to 0.785 Dice in one epoch** when fine-tuning — the pretrained encoder already understood the morphology.
+- **Partial-spine count is sensitive to `spine_dist_filter_um`** — lowering it caps the neck extension range, causing more necks to fail reaching the dendrite and increasing partial-spine count.
+- **`save_spine_meshes` and `save_validation_volumes`** are now YAML-configurable (were previously unreachable — controlled by hardcoded `save_intermediate_data=False` and missing `force_val_volume_materialize`).
+
+---
+
+## Day 11 — 2026-05-29
+
+### Goal
+
+Fine-tune Model 1Bv2 on the 16 corrected Ellinoora crops using CSC Mahti A100, then run analysis on the 11 held-out test crops.
+
+---
+
+### Fine-Tuning Pipeline Bugs Fixed
+
+Multiple issues encountered and resolved during the Mahti run:
+
+| Bug | Cause | Fix |
+|---|---|---|
+| `label matching failed` | Images had `_0000` suffix, labels didn't | Renamed labels to add `_0000` suffix to match |
+| `num_processes length mismatch` | Default 3 num_processes for 1 configuration | Added `-np 1` to `nnUNetv2_preprocess` call |
+| `dataset.json not found` in preprocessed folder | `extract_fingerprint` doesn't copy it (only `plan_and_preprocess` does) | Added explicit `shutil.copy2` of `dataset.json` to preprocessed folder in `finetune_plan()` |
+| CUDA device-side assert in Dice loss | Preprocessed labels contained `-1` values (ignore index), but loss function was checking for `7` (declared ignore label) — values never masked | Removed `ignore: 7` from `FINETUNE_LABELS` entirely; our data has no ignore-labeled voxels, so declare no ignore |
+
+`train_nnunet.py` also updated with `--id` and `--name` CLI flags so dataset name/ID can be set from terminal without editing the file:
+```bash
+python train_nnunet.py finetune --id 42 --name EllinooraFinetune
+```
+
+---
+
+### Fine-Tuning Run (13 epochs on Mahti A100)
+
+Training configuration (from transferred Dataset226 plans):
+- Architecture: ResidualEncoderUNet XL, 7 stages, features [32, 64, 128, 256, 320, 320, 320]
+- Patch size: [40, 256, 256], batch size: 10
+- ~8 min/epoch on A100
+
+Results at epoch 13:
+
+| Class | Dice |
+|---|---|
+| Dendrite | 0.966 |
+| Spine core | 0.950 |
+| Spine edge | 0.907 |
+| Spine neck | 0.821 |
+| Soma | 0.000 (rare in training crops) |
+| Axon | 0.000 (rare in training crops) |
+
+Train loss and val loss remained very close throughout (no overfitting gap). Training stopped at epoch 13 due to session time — model saved as `checkpoint_best.pth` (later copied to `checkpoint_final.pth`). 400 epochs recommended for full convergence; this model is usable but spine neck would benefit from more training.
+
+Model downloaded to `F:\ResPan\images_analysis\model\Dataset001_Spines\`.
+
+---
+
+### Test Set Analysis (11 crops)
+
+Ran analysis on the 11 held-out test crops (the ones NOT used for fine-tuning) with default settings:
+
+| Run | Total spines | Partial-spines |
+|---|---|---|
+| Default settings | 163 | ~6 |
+| After tuning | 187 | 38 |
+
+Tuning `spine_dist_filter_um` from 4.0 to 3.0 unexpectedly increased total spines — the tighter cap on neck extension created more partial-spines (counted in total). Reverted to 4.0 µm.
+
+Final recommended settings for this dataset:
+```yaml
+min_spine_vol_um3: 0.05       # was 0.03 — filters ~7-voxel noise at this resolution
+min_spine_head_voxels: 3      # was 2 — drops 1-3 voxel prediction artifacts
+spine_dist_filter_um: 4.0     # keep at default — lowering creates more partial-spines
+```
+
+---
+
+### Key Findings
+
+- **Soma/axon Dice = 0 throughout training** — these classes are very sparse in the 16 training crops (small FOV crops don't always contain soma/axon). Does not affect spine density or neck measurements.
+- **Pseudo-Dice EMA is misleadingly low** because soma/axon drag the average down despite the 4 main classes performing well.
+- **Learning rate is on a fixed polynomial schedule** (`LR = 0.01 × (1 - epoch/1000)^0.9`) — not adaptive to EMA. The 0.0 soma/axon does not affect the learning rate.
+- **Over-annotation artifact**: the model learned to predict ambiguous structures as spines because they were labeled as spines during Fiji correction. Proper fix is to re-clean training labels (leave ambiguous structures as background) and retrain.
+
+---
+
+### Key Files
+
+| File | Purpose |
+|---|---|
+| `F:\ResPan\train_nnunet.py` | Updated: `--id/--name` CLI flags, `finetune_plan` dataset.json copy, ignore label removed |
+| `F:\ResPan\run_respan.py` | Updated: dynamic DATASETS_ROOT, dynamic MODEL_DIR, all RESPAN settings YAML-readable |
+| `F:\ResPan\images_analysis\images\Analysis_Settings.yaml` | Full documented parameter set for analysis |
+| `F:\ResPan\images_analysis\model\Dataset001_Spines\` | Fine-tuned model (13 epochs from Model 1Bv2) |
+
+---
+
+### Next Steps
+
+- [ ] Clean training labels — remove ambiguous annotations, re-train for cleaner results
+- [ ] Continue fine-tuning to ~400 epochs for better spine neck convergence
+- [ ] Enable `save_spine_meshes: True` and `save_validation_volumes: True` for 3D outputs
+- [ ] Run analysis on full Ellinoora dataset once model quality is satisfactory
+
+---
+
+## Day 12 — 2026-06-05/10
+
+### Goal
+
+Re-clean Fiji-corrected training labels, prepare them for re-upload to Mahti, and re-run fine-tuning from Dataset226 (Model 1Bv2) with cleaner annotations. The key idea: leave all ambiguous structures (unclear spines, filopodia, partial necks) as background rather than labelling them. If they still show up in test results, they are genuinely detectable — if they disappear, they were noise driven by over-annotation.
+
+---
+
+### glasby_on_dark Fix (Fiji Macro)
+
+When re-running Macro 2 (`2_Channels_to_Labels_for_Training.ijm`) to convert corrected channels back to integer labels, the macro crashed with:
+
+```
+Unrecognized command: "glasbey_on_dark"
+```
+
+The `run("glasbey_on_dark")` line applies a colorful LUT to the label TIF before saving so that labels are visually distinguishable in Fiji. Without it, all integer values 1–6 appear nearly black (near-zero intensity display). The LUT is cosmetic — it does not affect pixel values or nnU-Net training. The error was due to a missing LUT in the Fiji installation. Fixed the Fiji installation; the line was kept in the macro.
+
+---
+
+### Label Validation and Cleanup
+
+New corrected labels placed in `F:\ResPan\training_data\labelsTr\` (16 crops). One crop (crop17) had corrupt label values 8 and 9 (10 voxels total) — these arose from accidentally overlapping channel paintbrush regions. Fixed by zeroing all non-standard voxels with numpy:
+
+```python
+import tifffile, numpy as np
+vol = tifffile.imread('crop17_..._0000.tif')
+vol[~np.isin(vol, [0,1,2,3,4,5,6])] = 0
+tifffile.imwrite('crop17_..._0000.tif', vol)
+```
+
+All 16 label files confirmed clean (values 0–6 only).
+
+---
+
+### Label Filename Rename — `_0000` Suffix
+
+The images on Mahti carry a `_0000` suffix in their filenames (e.g. `crop10_..._0003-1_0000.tif`). `train_nnunet.py`'s `setup()` function matches labels to images by exact filename, so labels must also have `_0000` before `.tif`. Renamed all 16 labels locally:
+
+```powershell
+Get-ChildItem "F:\ResPan\training_data\labelsTr\*.tif" | ForEach-Object {
+    Rename-Item $_.FullName ($_.BaseName + "_0000.tif")
+}
+```
+
+---
+
+### UnicodeEncodeError in RESPAN v1.5 — FileHandler Fix
+
+RESPAN v1.5 added Unicode characters (∩ and ✓) to the `_audit_3d_label_overlaps` function. On Windows, the default `cp1252` terminal encoding cannot print these, producing a `UnicodeEncodeError` in the console. The analysis still completes correctly — the error is cosmetic. Fixed by adding `encoding='utf-8'` to the `FileHandler` in `run_respan.py` so the log file is written cleanly:
+
+```python
+fh = logging.FileHandler(log_path, encoding='utf-8')
+```
+
+The StreamHandler (console) was left as-is — patching it would risk conflicts with the existing stdout TextIOWrapper.
+
+---
+
+### CSC.md Corrections
+
+Updated `F:\ResPan\CSC.md` with correct Mahti-specific paths and activation instructions:
+
+- **Code location:** `/scratch/project_2019059/respan/code/ResPan/`
+- **Environments:** `/projappl/project_2019059/respan/envs/respaninternal/` (nnU-Net) and `respanev/` (RESPAN analysis)
+- **Activation:** Do NOT use `export PATH=...` — Tykky containers must be called via full Python path.
+
+---
+
+### Re-Training Setup and Job Submission
+
+Deleted the old Dataset001 folders on Mahti (raw, preprocessed, results) to force a clean fine-tuning run from Dataset226. Uploaded the clean labels via the CSC web dashboard.
+
+Created `train_job.sh` on Mahti using `printf` (to avoid a leading blank line that causes `sbatch` to reject the file as "not a batch script"):
+
+```bash
+printf '#!/bin/bash\n#SBATCH --account=project_2019059\n#SBATCH --partition=gpusmall\n...\n\ncd /scratch/project_2019059/respan/code/ResPan\n/projappl/project_2019059/respan/envs/respaninternal/bin/python train_nnunet.py finetune\n' > train_job.sh
+sbatch train_job.sh   # → job 6802798
+```
+
+Job settings: A100 GPU, 24 hours, 64 GB RAM, 10 CPUs. nnU-Net auto-resumes from `checkpoint_latest.pth` if resubmitted.
+
+---
+
+## Day 13 — 2026-06-11/12
+
+### Goal
+
+Collect the training results from the 24-hour Mahti job, download the model, run analysis on the 11 test crops, and compare Model 2 (clean labels, 175 epochs) against Model 1 (all labels including ambiguous, ~20 epochs).
+
+---
+
+### Training Results (Job 6802798)
+
+The 24-hour job completed ~175 epochs at ~470 seconds per epoch on the A100. Training was healthy throughout:
+
+| Epoch | EMA pseudo-Dice | Train loss | Val loss |
+|---|---|---|---|
+| 0 | 0.231 | −0.210 | −0.457 |
+| 50 | 0.621 | −0.828 | −0.838 |
+| 100 | 0.634 | −0.840 | −0.847 |
+| 150 | 0.639 | −0.842 | −0.846 |
+| 174 | 0.640 | −0.843 | −0.847 |
+
+Per-class Dice at epoch 174 (foreground classes only):
+
+| Class | Dice |
+|---|---|
+| Dendrite | 0.982 |
+| Spine core | 0.981 |
+| Spine edge | 0.958 |
+| Spine neck | 0.925 |
+| Soma | 0.000 (not in training crops) |
+| Axon | 0.000 (not in training crops) |
+
+Train and val loss remained nearly identical throughout (no overfitting gap). The rapid improvement in epochs 0–50 is the warm-up phase where the randomly re-initialised segmentation head learns to read the pretrained encoder features. After epoch 50, improvement was gradual and flattening by epoch 150 — the model had largely converged.
+
+EMA pseudo-Dice formula: mean over all 6 classes including soma/axon zeros. Actual relevant-class performance is ~0.96 average across the 4 main classes.
+
+---
+
+### Model Download and Placement
+
+Downloaded the fine-tuned model from Mahti:
+
+```
+scp -r <user>@mahti.csc.fi:/scratch/.../nnunet_training/results/Dataset002_Spines/ F:\ResPan\nnunet_training\results\
+```
+
+Placed in `F:\ResPan\images_analysis\model\Dataset002_Spines\`. Since `002 < 226` alphabetically, `_find_model()` in `run_respan.py` automatically picks Dataset002 over Dataset226 without any other changes.
+
+---
+
+### Critical Discovery — Model in Wrong Location
+
+Before placing the model in `images_analysis/model/`, analysis was re-run and appeared to use the fine-tuned model — but results were identical to Dataset226. Investigation revealed that `run_respan.py` always reads from `images_analysis/model/` (first `Dataset*` folder alphabetically). The old fine-tuned models from Day 11 (model1) were never placed in this folder — they were only on Mahti. Every analysis run since Day 11 had been using Dataset226. The "comparison" between model1 and model226 earlier was therefore comparing the same model against itself.
+
+**Fix:** Dataset002_Spines (the properly trained 175-epoch model) was placed in `images_analysis/model/`. Old results deleted and analysis re-run.
+
+---
+
+### Analysis Results — 11 Test Crops
+
+Analysis run with the correct fine-tuned model (Dataset002_Spines, 175 epochs, clean labels):
+
+| Crop | Model 1 (~20 ep, all labels) | Model 2 (175 ep, clean labels) |
+|---|---|---|
+| crop2 | 13 | 11 |
+| crop3 | 19 | 17 |
+| crop6 | 25 | 19 |
+| crop7 | 15 | 9 |
+| crop8 | 21 | 13 |
+| crop14 | 19 | 19 |
+| crop15 | 22 | 17 |
+| crop16 | 21 | 13 |
+| crop21 | 13 | 10 |
+| crop22 | 8 | 7 |
+| crop23 | 11 | 10 |
+| **TOTAL** | **187** | **145** |
+
+Model 2 detects **42 fewer spines (−22%)** than Model 1.
+
+---
+
+### Morphological Comparison
+
+Pooled averages across all 11 crops:
+
+| Metric | Model 2 (175ep) | Model 1 (~20ep) | Difference |
+|---|---|---|---|
+| avg_spine_vol (µm³) | 0.574 | 0.523 | +9.8% |
+| avg_head_vol (µm³) | 0.450 | 0.416 | +8.2% |
+| avg_head_surf_area (µm²) | 3.185 | 3.013 | +5.7% |
+| avg_spine_area (µm²) | 0.632 | 0.573 | +10.2% |
+| avg_neck_length (µm) | 0.930 | 0.997 | −6.7% |
+| avg_neck_vol (µm³) | 0.127 | 0.126 | +0.6% |
+
+---
+
+### Interpretation
+
+Model 2's 42 missing spines are the small and ambiguous structures that were explicitly left as background in the clean training labels. The model learned not to predict them. The spines it does detect are on average ~10% larger in volume and surface area — these are the clearly-defined, unambiguous spines that were confidently annotated. Neck length is slightly shorter, consistent with the model finding cleaner, more direct neck paths rather than extending toward borderline structures.
+
+The model1 extra detections were likely a mix of real small spines and noise/artifacts that the ambiguous labels taught the model to predict. Which is more "correct" cannot be determined without ground-truth validation — but for thesis analysis, the conservative model2 approach is safer (fewer false positives, higher confidence per detection).
+
+Model1's ~20 epochs were still well within the warm-up phase (epochs 0–50) — the model was essentially still Dataset226 with barely any specialisation. The difference between model1 and model2 results is therefore largely: Dataset226 predictions vs truly fine-tuned predictions.
+
+---
+
+### Key Files
+
+| File | Purpose |
+|---|---|
+| `F:\ResPan\nnunet_training\results\Dataset002_Spines\` | Fine-tuned model (175 epochs, clean labels) |
+| `F:\ResPan\images_analysis\model\Dataset002_Spines\` | Model copy used by run_respan.py |
+| `F:\ResPan\old_stuff_to_compare\analysis_results\model2\` | Analysis results with Model 2 (145 spines) |
+| `F:\ResPan\old_stuff_to_compare\analysis_results\model001_analysis_results\` | Analysis results with Model 1 (187 spines) |
+| `F:\ResPan\old_stuff_to_compare\analysis_results\model226\` | Original Dataset226 folder (images + model, no stored results) |
+
+---
+
+### Next Steps
+
+- [ ] Decide whether to continue training Model 2 to 300 epochs (resubmit job — nnU-Net auto-resumes from `checkpoint_latest.pth`, needs ~17 more hours)
+- [ ] Visually inspect crops with biggest drop (crop6: 25→19, crop7: 15→9, crop8: 21→13) in Fiji to determine whether missing detections are false positives or real small spines
+- [ ] Optionally update `spine_dist_filter_um: 3.0 → 4.0` in `Analysis_Settings.yaml` (current value may be capping neck extension)
+- [ ] Run analysis on full Ellinoora dataset once model quality decision is made
+
+---
+
+## Day 14 — 2026-06-12
+
+### Goal
+
+Deep-dive into the RESPAN analysis pipeline: how it works step by step, and specifically how it handles edge cases (mid-neck false heads, thin Z-slice spines, multiple dendrites, floating detections). Also audited the `detect_multi_head_spines` feature.
+
+---
+
+### How the RESPAN Analyzer Works (step by step)
+
+The analyzer is called via `analyze_spines()` in `cloned_respan/RESPAN/ImageAnalysis/ImageAnalysis.py`. It takes the raw TIF and the nnU-Net label TIF and produces all CSVs and validation images.
+
+---
+
+#### Step 1 — Label channel extraction
+
+The integer label TIF (values 1–6) is split into binary masks per class. For `model_type = 4` (our setting):
+
+```
+value 1 → dendrites
+value 2 → spine_cores
+value 3 → spine_membranes
+value 4 → necks
+value 5 → soma
+value 6 → axons (ignored in our crops)
+spines = spine_cores + spine_membranes  (combined for downstream steps)
+```
+
+---
+
+#### Step 2 — Dendrite filtering
+
+All connected components of the dendrite mask are labeled. Any component smaller than `min_dendrite_vol_um3` (1.0 µm³ ≈ 55 voxels at our resolution) is discarded. This removes floating dendrite fragments that would produce spurious spine-to-dendrite assignments.
+
+`dendrite_repair: False` in our settings — no gap bridging.
+
+---
+
+#### Step 3 — Distance transforms and skeletonization
+
+Two GPU distance maps are built:
+
+1. **Dendrite distance** — Euclidean distance (µm) from every voxel to the nearest dendrite surface. Used for two separate things: filtering spines that are too far away, and measuring spine length (= max distance within the spine from the dendrite).
+
+2. **Soma distance** — only built when soma voxels are present. Skipped for our training crops (no soma labelled).
+
+3. **Dendrite skeleton** — `skimage.morphology.skeletonize()` on the dendrite mask produces a 1-voxel-thin centerline, used later for geodesic distance calculation.
+
+---
+
+#### Step 4 — Spine instance detection (watershed)
+
+nnU-Net produces a semantic label (all spine_cores have value 2, touching each other). The analyzer separates individual spines using watershed:
+
+1. Each connected component of `spine_cores` is eroded by `erode_shape = (0.5, 2, 2)` voxels (Z=0.5 = no erosion, Y=2 = 265 nm, X=2 = 265 nm). Surviving eroded seeds become watershed seeds.
+2. Watershed fills outward from each seed through the combined `spine_cores + spine_membranes` volume. Each seed captures one spine instance.
+3. If a core was entirely destroyed by erosion, the orphan membrane voxels are recovered separately as independent spine instances (orphan-membrane recovery path).
+
+Result: `spine_labels` — every voxel has a unique integer instance ID.
+
+---
+
+#### Step 5 — Initial filtering and size gate
+
+`regionprops` runs on every spine instance. Spines are dropped if:
+- Volume < `min_spine_vol_um3` (0.05 µm³ ≈ 7 voxels at our resolution)
+- Volume > `max_spine_vol_um3` (15.0 µm³)
+- Min distance to any dendrite surface > `spine_dist_filter_um` (3.0 µm = 22.6 voxels)
+
+A tiny-head backstop then drops instances ≤ `min_spine_head_voxels` (3 voxels) — single-voxel nnU-Net artifacts that survive the volume gate due to rounding.
+
+Result: `spines_filtered` — instance-labeled volume with plausible spine heads only.
+
+---
+
+#### Step 6 — Neck association
+
+nnU-Net neck voxels (value 4) are a semantic mask with no per-spine IDs. They are assigned to spines in three stages:
+
+**6a — Connected components on raw necks**: each disconnected neck blob gets a component ID.
+
+**6b — Associate by proximity** (`associate_spines_with_necks_gpu`): GPU nearest-neighbour search assigns each neck component to the closest spine head.
+
+**6c — Extend toward dendrite** (`extend_objects_GPU`): GPU BFS/dilation grows each neck outward through high-intensity voxels toward the dendrite surface, bridging the 1–3 voxel gaps nnU-Net commonly leaves at the neck–dendrite junction.
+
+**6d — Pathfinding fallback** (`bridge_spine_neck_via_pathfinding`): for necks that still don't reach the dendrite after BFS, `skimage.graph.route_through_array` runs Dijkstra on an inverted-intensity cost image (bright voxels = low cost = preferred path). This is "pathfinder-synthesised" neck — the spurious filter checks these specifically.
+
+---
+
+#### Step 7 — Neck quality filters
+
+Four filters run sequentially:
+
+1. **Drop disconnected fragments** (`drop_disconnected_neck_fragments: True`): keeps only fragments 26-voxel-connected to the spine head; drops the rest.
+2. **Drop wrong-direction fragments** (`drop_wrong_direction_neck_fragments: True`): drops neck fragments that travel away from the dendrite instead of toward it.
+3. **Trim necks touching other spines** (`trim_necks_touching_other_spines: False`): disabled — preferred action when a neck crosses another head is to mark as partial-spine.
+4. **Spurious neck detection**: flags necks longer than `spurious_path_length_min_um` (1.0 µm) with fewer than `spurious_nnunet_support_min` (20%) of voxels actually predicted as neck by nnU-Net. Action = `spurious_exclude_mode: neck_only` — drop the neck, keep the head, reclassify as partial-spine.
+
+---
+
+#### Step 8 — Partial spines and filopodia
+
+**Partial-spine** (`keep_partial_spines: True`): any spine whose neck never gets within `partial_spine_dist_threshold_vox` (2 voxels ≈ 130 nm) of the dendrite is flagged as `spine_type = 'partial-spine'`. Kept in the CSV with neck metrics zeroed.
+
+**Filopodia recovery** (`recover_filopodia: False`): orphan neck voxels with no attached head would become filopodia. Disabled — orphan necks are silently discarded.
+
+---
+
+#### Step 9 — Geodesic distance from soma
+
+Dijkstra runs along the dendrite skeleton from each spine's attachment point to the soma (or the nearest skeleton endpoint if no soma). Output is `geodesic_dist_to_soma` in µm. Each spine also gets a `dendrite_id` — which labeled dendrite it attaches to.
+
+---
+
+#### Step 10 — Full morphological measurements
+
+Per-spine quantitative measurements:
+
+| Measurement | Method |
+|---|---|
+| `spine_vol`, `head_vol`, `neck_vol` | voxel count × voxel volume |
+| `head_surf_area`, `spine_area` | marching cubes mesh surface area |
+| `spine_length` | max of dendrite distance map inside spine voxels |
+| `neck_length` | arc length along neck voxels from head to dendrite |
+| `head_bbox_vol`, `head_extent`, `head_solidity` | regionprops on bounding box |
+| `avg_spine_C1_mean_int` | mean raw fluorescence inside each region |
+
+If `save_spine_meshes: True` — each head mesh is saved as an `.obj` file.
+
+---
+
+#### Step 11 — Table and validation output
+
+Two CSVs per image:
+- `<name>_detected_spines.csv` — one row per spine, all per-spine metrics
+- `<name>_dendrite_summary.csv` — one row per dendrite (length, total spines, averages)
+- `Detected_spines_summary.csv` — one row per image, updated after each image
+
+Validation MIPs: 8-channel max-intensity projections (raw, dendrite, spine, neck, spine IDs, dendrite distance, geodesic distance) for visual QC.
+
+---
+
+### Edge Cases — How the Analyzer Handles Them
+
+#### Multiple dendrites in one image
+
+`filter_dendrites` labels every dendrite separately (label 1, 2, 3…). All downstream processing runs on the whole volume simultaneously — not dendrite by dendrite. The distance transform is computed jointly, so each voxel gets the distance to the nearest dendrite surface (whichever dendrite that is). Neck extension grows toward whichever dendrite is closest. `dendrite_id` in the CSV records which dendrite each spine attaches to. The `dendrite_summary.csv` has one row per dendrite with its own length and spine count.
+
+#### Thin Z-slice spines (1–2 Z planes only)
+
+Z resolution = 410 nm vs XY = 133 nm. Spines thinner than 2 Z-slices are biologically possible (small filopodia, thin mushroom necks). Z erosion is 0.5 voxels (effectively zero), so thin Z-extent cores survive the erosion step. The real gate is the volume filter: at our voxel size (0.00721 µm³/voxel), a single-Z-slice spine needs ≥ 7 voxels in XY to survive the 0.05 µm³ threshold. Below that it is dropped. If it survives, all 3D measurements still work — just with fewer voxels and a flatter marching cubes mesh.
+
+#### Floating spines (no nearby dendrite)
+
+`initial_spine_measurements` checks the minimum dendrite distance across all voxels of each spine. Any spine with minimum distance > `spine_dist_filter_um` (3.0 µm) is dropped entirely and never appears in any CSV.
+
+#### Floating orphan necks (nnU-Net predicted a neck with no spine head)
+
+After neck association, neck voxels that couldn't be matched to any spine head (because the head was filtered out) are orphan necks. With `recover_filopodia: False`, they are **silently discarded** — they do not appear in any CSV or log. With `recover_filopodia: True` they would appear as filopodia.
+
+---
+
+### `detect_multi_head_spines` — Deep Audit
+
+#### What it does
+
+After all neck processing is complete, builds a "territory" volume:
+
+```
+territory = head_voxels | assigned_neck_voxels | raw_nnU-Net_neck_prediction
+```
+
+The third term is the **original nnU-Net neck prediction (class 4) binarized before any filtering**. Even necks dropped by the spurious or disconnect filters are still included. Runs 26-connected components on the territory. If one CC contains 2+ spine head labels → multi-head group. Parent = smallest spine_id in the group.
+
+Three new columns added to `detected_spines.csv`: `parent_spine_id`, `head_index`, `multi_head_group_size`. A new `_Multi_Head_Spine_Groups.csv` is created with one row per group, summing head_vol, neck_length, etc. across all members.
+
+#### What it does NOT do
+
+- Does not delete the false head — both rows remain in the CSV
+- Does not change spine_vol, neck_length, or any measurement
+- Does not change the total count in `Detected_spines_summary.csv`
+- Does not distinguish a real branched spine from a mid-neck false detection
+
+#### Shortcomings
+
+**1. Primary = smallest spine_id, not the real head.** Watershed labels seeds by spatial order. The smallest label is not the largest or most biologically meaningful head. In a mid-neck false-head case, the false head may get label 7 and the real head label 8, making the false head `head_index = 0` (primary). Post-processing by `head_vol` is the only reliable way to find the real head.
+
+**2. 26-connectivity with no distance limit.** If nnU-Net predicted a spurious neck blob between two completely independent adjacent spines, their territories connect and they are grouped as a "multi-head spine" even though they are two separate structures. No radius cap, no size check on the territory.
+
+**3. No discrimination between real branches and false detections.** A genuine two-tip branched spine and a mid-neck false detection look identical: two rows, same `parent_spine_id`, `multi_head_group_size = 2`.
+
+**4. Neck_length summed, not selected.** In `Multi_Head_Spine_Groups.csv`, `total_neck_length = sum of all member neck_lengths`. For a real branched spine, both members report a neck path to the dendrite — the sum double-counts. For the false-head case, the real head is partial-spine (neck_length = 0) and the false head has the actual neck — the sum happens to be numerically correct but for the wrong reason.
+
+**5. `_neck_mask` can be None.** The raw neck mask is only in scope when `neck_generation = True` AND `model_type >= 3`. If either is false, the territory reduces to `head_voxels | assigned_neck_voxels` only — much weaker detection. Not an issue with our settings but fragile.
+
+**6. Does not correct `Detected_spines_summary.csv`.** The summary CSV total_spines count is built before the grouping columns are added.
+
+#### How to use it correctly for counting
+
+```python
+df = pd.read_csv('..._detected_spines.csv')
+# Count only primary heads (one per physical spine)
+n_real = (df['spine_id'] == df['parent_spine_id']).sum()
+# Or equivalently:
+n_real = (df['head_index'] == 0).sum()
+# For the real head's measurements in a group, pick the member with largest head_vol
+```
+
+#### Current setting
+
+`detect_multi_head_spines: False` (disabled in `Analysis_Settings.yaml`). Enabling it adds the grouping annotation but does not break any existing analysis — it is purely additive columns. Worth enabling for thesis analysis to at least surface the topology, then filter in post-processing.
+
+---
+
+### Next Steps
+
+- [ ] Enable `detect_multi_head_spines: True` and re-run on model2 results, inspect groups CSV
+- [ ] Decide whether to resubmit training to 300 epochs
+- [ ] Visually QC crops with biggest model1→model2 drop (crop6, crop7, crop8) in Fiji
+- [ ] Run analysis on full Ellinoora dataset
+
+---
+
+## Day 15 — 2026-06-15
+
+### SelfNet — Feasibility, Pipeline Analysis, and Bug Fix
+
+---
+
+#### Can SelfNet be trained on the current crops?
+
+**No.** Confirmed from WhatHappened.md Day 13 assessment (line 1327):
+
+> SelfNet requires `original_Z >= ceil(64 × scale)` to form 64×64 XZ patches. At scale = 0.1326/0.410 = 0.323, the minimum is **21 Z planes**. Only crop10 (22 slices) meets this threshold; the other crops (14–18 slices) cannot even start SelfNet.
+
+**Decision remains: skip SelfNet training on these crops.** Worth revisiting when full-FOV stacks with ≥30 Z planes from multiple sessions are available.
+
+---
+
+#### How SelfNet training works (pipeline)
+
+Three internal steps in `SelfNet_Model_Training.py`:
+
+**Step 1 — `self_net_create_slices`**
+
+Reads one 3D TIF, extracts:
+- `training_slices/xy/` — one 2D slice per Z-plane (sharp, native XY resolution)
+- `training_slices/xy_lr/` — same slices downsampled by `scale` then upsampled back (simulates Z-quality blur in XY)
+- `training_slices/xz/` — resliced XZ views, scaled so pixel size matches XY (one per Y-position)
+- `training_slices/yz/` — same for YZ (one per X-position; not used in training)
+
+The `scale` parameter = `XY_res / Z_step` (e.g. 0.1326/0.410 = 0.323 for our data). It controls how much the XY-lowres simulation degrades the image, and how much the XZ reslice is stretched to make voxels isotropic. **Critical**: if scale is wrong, the network learns to correct the wrong amount of blur.
+
+**Z-plane constraint**: XZ patch height = `Z_planes / scale`. For 64×64 patches you need `Z_planes >= ceil(64 × scale)`. At scale=0.323 that is 21 planes.
+
+**Step 2 — `generate_training_data`**
+
+Reads all slices from `training_slices/xy/`, `training_slices/xy_lr/`, `training_slices/xz/`. Crops 64×64 patches with stride 64. Discards patches below `bg_threshold` (background). Saves `train_data/train_data.npz`. Uses `len(os.listdir())` dynamically — the directory can contain slices from any number of images.
+
+**Step 3 — `train_self_net`**
+
+CycleGAN with two generators (G_A: xy_lr → xz domain, G_B: xz → xy_lr domain) and two discriminators, plus a `deblur_net` that maps `G_A(xy_lr)` → `xy`. Only `deblur_net` is saved as the final model. 60 epochs default (GUI), batch_size=8, 1 GPU (`cuda:0`). Takes 30 min–2 hours depending on patch count.
+
+---
+
+#### Bug found and fixed: `SelfNet_Model_Training.py` only processed one image
+
+**Problem**: `main()` in `cloned_respan/RESPAN/Scripts/SelfNet_Model_Training.py` did:
+
+```python
+tif_files = [f for f in os.listdir(input_dir) if f.endswith('.tif')]
+if tif_files:
+    filename = tif_files[0]  # Select the first .tif file
+self_net_create_slices(input_dir, filename, scale)
+```
+
+Only `tif_files[0]` was processed. `generate_training_data` was designed to read however many slices are in the directory (`len(os.listdir())`), so the infrastructure for multi-image training existed — but `main()` never fed it more than one file.
+
+The RESPAN GUI passes `input_dir` (a folder) and the docstring says "use multiple images to cover the full content diversity", but only the first image alphabetically was ever used.
+
+Additionally, `self_net_create_slices` always wrote files starting from `1.tif`, so calling it twice would silently overwrite the first image's slices.
+
+**Fix (in `cloned_respan/RESPAN/Scripts/SelfNet_Model_Training.py`)**:
+
+1. Added `xy_start=0, xz_start=0` parameters to `self_net_create_slices` — slices are written starting from `xy_start + 1` and `xz_start + 1` instead of always from `1`. Returns `(n_xy, n_xz)` so the caller knows the next offset.
+
+2. Changed `main()` to loop over all TIFs, tracking cumulative offsets:
+
+```python
+tif_files = sorted([f for f in os.listdir(input_dir) if f.endswith('.tif')])
+xy_start = 0
+xz_start = 0
+for filename in tif_files:
+    n_xy, n_xz = self_net_create_slices(input_dir, filename, scale, xy_start, xz_start)
+    xy_start += n_xy
+    xz_start += n_xz
+```
+
+Backward compatible: default `xy_start=0, xz_start=0` produces identical output for the single-image case.
+
+3. Fixed a stale comment in `train_selfnet.py` that said "only the first image alphabetically will actually be used" — no longer true.
+
+---
+
+### Files Changed
+
+| File | Change |
+|---|---|
+| `cloned_respan/RESPAN/Scripts/SelfNet_Model_Training.py` | `self_net_create_slices`: added `xy_start`/`xz_start` offset params, returns `(n_xy, n_xz)`; `main()`: loops over all TIFs with cumulative offsets |
+| `train_selfnet.py` | Removed stale "only first image" comment |
+
+---
+
+### Next Steps
+
+- [ ] Enable `detect_multi_head_spines: True` and re-run on model2 results, inspect groups CSV
+- [ ] Decide whether to resubmit training to 300 epochs
+- [ ] Visually QC crops with biggest model1→model2 drop (crop6, crop7, crop8) in Fiji
+- [ ] Run analysis on full Ellinoora dataset
+- [ ] SelfNet training feasible once full-FOV stacks (≥30 Z planes) are available
+
+---
+
+## Day 16 — 2026-06-15
+
+### Goal
+
+Create a Fiji-compatible ROI export from RESPAN analysis outputs so that segmentation boundaries (dendrite, individual spines, individual necks) can be overlaid on the original image stack and on MIP projections inside Fiji's ROI Manager.
+
+---
+
+### `generate_fiji_rois.py` — New Script
+
+**What it does**: reads the label TIF and detected_spines CSV for each crop and writes a single ROI zip per crop containing polygon ROIs for every structure, named and numbered to match the CSV `spine_id`.
+
+**Where it looks**: scans `images_analysis/` and enters only subdirectories that contain a `labels/` folder — avoids `images/`, `model/`, or any other folder automatically.
+
+**Inputs per crop**:
+- `labels/<name>.tif` — semantic label volume (Z,Y,X), values 1–6
+- `Tables/<name>_detected_spines.csv` — `spine_id`, `x`, `y`, `z` columns in voxel coordinates
+
+**How spine IDs are assigned** (the labels TIF has no instance IDs — only semantic classes):
+1. Connected components on `label==2|3` (core + membrane) separates individual spine instances.
+2. Each CC centroid is matched to the nearest CSV row by Euclidean distance in (X,Y,Z) voxel space.
+3. Multiple CC fragments matching the same spine_id (e.g. disconnected core/membrane pieces) are OR-merged into one mask before ROI tracing.
+4. Same approach for necks (`label==4`): each neck CC is matched to the nearest spine CC centroid, then looked up to the CSV spine_id, then merged per spine_id.
+
+**ROIs produced per crop**:
+
+| ROI name | Source | Use |
+|---|---|---|
+| `dendrite-Z{n}` | `label==1`, per Z-slice | Overlay on 3D stack |
+| `spine_{id}-Z{n}` | `label==2\|3`, merged per spine, per Z-slice | Overlay on 3D stack |
+| `neck_{id}-Z{n}` | `label==4`, merged per spine, per Z-slice | Overlay on 3D stack |
+| `dendrite-MIP` | Z-projection of dendrite mask | Overlay on MIP image |
+| `spine_{id}-MIP` | Z-projection of spine mask | Overlay on MIP image |
+| `neck_{id}-MIP` | Z-projection of neck mask | Overlay on MIP image |
+
+**Output**: `images_analysis/<name>/ROIs/<name>_rois.zip`
+
+To load in Fiji: open the image → Analyze > Tools > ROI Manager > More > Open → select zip → check Show All.
+
+**How to run**:
+```powershell
+# All crops
+C:\Users\ARASH\Anaconda3\envs\respandev\python.exe f:\ResPan\generate_fiji_rois.py
+
+# Single crop
+C:\Users\ARASH\Anaconda3\envs\respandev\python.exe f:\ResPan\generate_fiji_rois.py --crop crop14_...
+```
+
+---
+
+### Bugs Fixed During Development
+
+#### 1. Duplicate ROI name warnings
+
+**Problem**: `zipfile` warned about duplicate entries like `spine_6-Z7.roi`. This happened because connected components found more CC instances (21) than the CSV had spine rows (14) — small segmentation fragments that were filtered out by RESPAN's volume/distance gates still appear in the label TIF and steal spine_ids via nearest-centroid matching.
+
+**Fix**: instead of generating ROIs immediately per CC, collect a `defaultdict(mask)` keyed by spine_id and OR each CC's mask into it. After all CCs are processed, generate ROIs from the merged masks. Two fragments that share the same spine_id become one combined polygon per Z-slice. Applied the same fix to neck CCs.
+
+#### 2. Straight-line artifact on border-touching ROIs
+
+**Problem**: for Z-slices where the dendrite (or any structure) touches the edge of the image, `find_contours` cannot close the contour on the open side and draws a straight line between the two endpoints instead.
+
+**Fix**: pad the 2D binary mask by 1 pixel of zeros on all sides before calling `find_contours`, then subtract 1 from the contour coordinates to restore original pixel positions. The object no longer touches the image border, so a proper closed polygon is traced.
+
+```python
+padded = np.pad(slice_mask, 1, mode='constant', constant_values=0)
+contours = find_contours(padded, 0.5)
+contour = max(contours, key=len) - 1   # subtract pad offset
+```
+
+---
+
+### Dependencies
+
+`roifile` is not in either conda environment by default. Install with pip (pure Python, no compiled deps):
+
+```powershell
+# Windows (respandev)
+C:\Users\ARASH\Anaconda3\envs\respandev\python.exe -m pip install roifile
+```
+
+```bash
+# Mahti (goes to user site-packages, picked up automatically)
+/projappl/project_2019059/respan/envs/respandev/bin/pip install roifile
+```
+
+All other dependencies (`scipy`, `skimage`, `tifffile`, `pandas`, `numpy`) are already present in `respandev`.
+
+---
+
+### Files Changed
+
+| File | Change |
+|---|---|
+| `generate_fiji_rois.py` | New script — Fiji ROI zip generation from RESPAN labels |
+
+---
+
+### Next Steps
+
+- [ ] Enable `detect_multi_head_spines: True` and re-run on model2 results, inspect groups CSV
+- [ ] Decide whether to resubmit training to 300 epochs
+- [ ] Visually QC crops with biggest model1→model2 drop (crop6, crop7, crop8) in Fiji using the new ROIs
+- [ ] Run analysis on full Ellinoora dataset
+- [ ] SelfNet training feasible once full-FOV stacks (≥30 Z planes) are available
