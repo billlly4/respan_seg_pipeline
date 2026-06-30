@@ -2071,6 +2071,8 @@ Create a Fiji-compatible ROI export from RESPAN analysis outputs so that segment
 
 ### `generate_fiji_rois.py` — New Script
 
+**Why ROIs are needed**: RESPAN measures fluorescence intensity (Ch1) inside each spine during analysis, but the imaging data often has a second or third channel (e.g. Lifeact-GFP, AMPAR) that needs to be measured on the exact same spine/neck regions. Exporting the segmentation boundaries as Fiji ROIs allows measuring mean intensity of any channel on the same per-spine, per-neck polygons directly inside Fiji, without re-running the full pipeline.
+
 **What it does**: reads the label TIF and detected_spines CSV for each crop and writes a single ROI zip per crop containing polygon ROIs for every structure, named and numbered to match the CSV `spine_id`.
 
 **Where it looks**: scans `images_analysis/` and enters only subdirectories that contain a `labels/` folder — avoids `images/`, `model/`, or any other folder automatically.
@@ -2159,6 +2161,32 @@ All other dependencies (`scipy`, `skimage`, `tifffile`, `pandas`, `numpy`) are a
 
 ---
 
+### Manual Label Correction + Re-analysis Workflow
+
+After inspecting ROIs in Fiji, the label TIF for a crop can be corrected manually and the analysis re-run without touching nnU-Net. Both pieces were already in `run_respan.py` — no code changes needed.
+
+**Workflow:**
+
+1. Open `images_analysis/<name>/labels/<name>.tif` in Fiji
+2. Convert label values to separate channels (Image > Color > Make Composite or split by value), edit, convert back to a single-channel label TIF with the same value encoding (1–6), and save over the original file
+3. Re-run analysis only for that crop:
+```powershell
+C:\Users\ARASH\Anaconda3\envs\respandev\python.exe f:\ResPan\run_respan.py crop14_...
+```
+4. Re-export ROIs:
+```powershell
+C:\Users\ARASH\Anaconda3\envs\respandev\python.exe f:\ResPan\generate_fiji_rois.py --crop crop14_...
+```
+
+**Why nnU-Net is skipped automatically**: `run_respan.py` line 487 checks `if os.path.isfile(label_file)` before calling nnU-Net — if the label TIF exists it prints "Labels exist -- skipping nnU-Net" and goes straight to analysis. The analysis step always re-runs and overwrites Tables, Spine_Arrays, Validation_Data, SWC_files.
+
+**Targeting multiple crops at once**: pass several names as positional arguments:
+```powershell
+... run_respan.py crop3_... crop6_... crop14_...
+```
+
+---
+
 ### Next Steps
 
 - [ ] Enable `detect_multi_head_spines: True` and re-run on model2 results, inspect groups CSV
@@ -2166,3 +2194,115 @@ All other dependencies (`scipy`, `skimage`, `tifffile`, `pandas`, `numpy`) are a
 - [ ] Visually QC crops with biggest model1→model2 drop (crop6, crop7, crop8) in Fiji using the new ROIs
 - [ ] Run analysis on full Ellinoora dataset
 - [ ] SelfNet training feasible once full-FOV stacks (≥30 Z planes) are available
+
+---
+
+## Day 17 — 2026-06-24
+
+### Goal
+
+Complete the full pipeline: fix remaining ROI issues, enable multi-head spine detection, audit all data preparation scripts, and write a clean step-by-step pipeline guide.
+
+---
+
+### ROI Zip Split into Two Files
+
+`generate_fiji_rois.py` previously saved all ROIs (per-Z-slice + MIP) into one zip. Split into two separate files so each can be loaded independently in Fiji:
+
+- `<name>_rois_3d.zip` — per-Z-slice polygon ROIs, load on the 3D stack
+- `<name>_rois_mip.zip` — Z-projected flat ROIs, load on a MIP image
+
+---
+
+### `detect_multi_head_spines` Enabled
+
+All 11 per-crop `Analysis_Settings.yaml` files updated from `False` to `True`. Analysis re-run on all crops (nnU-Net skipped — labels already existed). Results:
+
+| Crop | Multi-head groups |
+|---|---|
+| crop2 | 0 |
+| crop3 | 2 |
+| crop6 | 1 |
+| crop7 | 0 |
+| crop8 | 1 |
+| crop14 | 2 |
+| crop15 | 1 |
+| crop16 | 1 |
+| crop21 | 2 |
+| crop22 | 1 |
+| crop23 | 3 |
+| **Total** | **14 groups** |
+
+14 multi-head groups across 11 crops — roughly 1 per crop. Each group means one extra row in the CSV (one physical spine counted twice). For the thesis, use:
+
+```python
+n_spines = (df['head_index'] == 0).sum()
+```
+
+to get the corrected count per crop.
+
+---
+
+### Pipeline Audit — Data Preparation Scripts
+
+Full audit of what exists and what was missing:
+
+| Script | Status | Purpose |
+|---|---|---|
+| `batch-convertor/Tif_Batch_2024.ijm` | Exists (third-party) | Convert any format to multi-channel TIF |
+| `batch-convertor/extract_channel.ijm` | **Rewritten** | Extract one channel from multi-channel TIFs |
+| `batch-convertor/rename_for_nnunet.ijm` | **New** | Rename training data to nnU-Net case format |
+| `batch-convertor/lif_to_tif.py` | Exists | Python alternative for LIF extraction |
+| `prepare_respan_experiments.py` | **Obsolete** | Built old RESPAN_experiments/ structure — no longer used |
+
+#### `extract_channel.ijm` — Rewritten
+
+Old version required filenames to contain `crop{N}` and used a crop number range filter. Rewritten to:
+- Work with any filenames (no naming requirement)
+- Accept 0-based channel index (0 = first, 1 = second, etc.)
+- Process all TIFs in the folder
+- Save to `extracted_ch{N}/` subfolder with identical filenames
+
+#### `rename_for_nnunet.ijm` — New
+
+Fiji macro that renames files in `imagesTr/` and `labelsTr/` to nnU-Net case naming format without opening them (`File.rename()`):
+- Images: `case{NNN}_0000.tif`
+- Labels: `case{NNN}.tif`
+- Files already named `case{NNN}...` are skipped automatically
+- New numbers continue from the highest existing case number — safe to add data incrementally
+- Files paired by alphabetical sort order
+
+---
+
+### `RESPAN_Training_DeepDive.md` — Rewritten
+
+Old document was a technical deep-dive into model architectures, loss functions, and training internals. Replaced with a clean step-by-step practical guide covering:
+- Part 1: Data preparation (format conversion, channel extraction)
+- Part 2: Running the analysis (Windows and Mahti commands)
+- Part 3: QC and manual label correction workflow
+- Part 4: Reading results (corrected spine counts)
+- Part 5: Model training (nnU-Net, with pointers to CARE and SelfNet)
+- Quick reference table of all commands
+
+---
+
+### Files Changed
+
+| File | Change |
+|---|---|
+| `generate_fiji_rois.py` | Split single ROI zip into `_rois_3d.zip` and `_rois_mip.zip` |
+| `images_analysis/crop*/Analysis_Settings.yaml` | `detect_multi_head_spines: True` in all 11 crops |
+| `batch-convertor/extract_channel.ijm` | Rewritten — general (no crop name requirement, 0-indexed channel) |
+| `batch-convertor/rename_for_nnunet.ijm` | New — renames training data to nnU-Net case format |
+| `RESPAN_Training_DeepDive.md` | Complete rewrite as step-by-step pipeline guide |
+
+---
+
+### Pipeline Status
+
+All scripts in place for the full pipeline end to end. Pending only on external data:
+
+- [ ] New datasets arriving
+- [ ] Visual QC of crop6/7/8 (biggest model1→model2 drops)
+- [ ] CARE training (needs paired low/high SNR acquisitions)
+- [ ] SelfNet training (needs full-FOV stacks ≥27 Z planes)
