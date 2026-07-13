@@ -2214,6 +2214,38 @@ Complete the full pipeline: fix remaining ROI issues, enable multi-head spine de
 
 ---
 
+### ROI Source Switched to RESPAN's Own Instance Volume
+
+The original ROI approach re-derived spine instances from the semantic label TIF using connected components + centroid matching to the CSV. This was fragile — it could collapse two adjacent spines into one ROI, or split one spine across fragments, because it does not replicate RESPAN's internal instance separation (distance-transform/watershed logic).
+
+**Discovery**: RESPAN already saves its internal instance separation. The file `Validation_Data/Validation_Vols/<name>.tif` is a multi-channel volume (ZCYX) at full image resolution. Its channels (from `_vol_arrays` in `ImageAnalysis.py`) are:
+
+```
+[neuron, spines, spines_filtered, connected_necks, (_grouped_spines), labeled_dendrites, skeleton]
+```
+
+- **channel 2 = `spines_filtered`** — each spine already carries its own instance ID
+- **channel 3 = `connected_necks`** — each neck labelled with its spine's ID
+- **channel -2 = `labeled_dendrites`**
+
+Verified: the spine IDs in channel 2 are **identical** to the CSV `spine_id` (exact set match on crop14), and neck IDs are a clean subset. `_grouped_spines` is only present when `detect_multi_head_spines` is on, so `spines_filtered` (ch2) and `connected_necks` (ch3) are stable at fixed indices; dendrites are always ch[-2].
+
+**Change**: `generate_fiji_rois.py` now reads instance IDs directly from this volume (`mask == id` per ID) — no connected components, no centroid matching, no merge logic, and no possibility of collapsing adjacent spines. The old label+CSV method is kept as an automatic fallback for images where the Validation_Vols file is absent (i.e. `save_val_volumes` was off).
+
+**Validation**: all 11 crops used the instance-volume path, and the ROI spine counts now match the Day 13 model2 detected counts exactly (crop2=11, crop3=17, crop6=19, crop7=9, crop8=13, crop14=19, crop15=17, crop16=13, crop21=10, crop22=7, crop23=10).
+
+---
+
+### Contour Tracing — All Pieces, Not Just the Largest
+
+The contour tracer previously kept only the **longest** contour per Z-slice, silently dropping any other disconnected piece. This mattered for the dendrite: at branch points, or where the shaft curves out of a slice and back, a slice can contain two or more separate dendrite pieces. Audit across all crops found **36 dendrite slices** with dropped pieces (spines were essentially unaffected — 1 slice total).
+
+Refactored contour tracing into `_slice_contours()`, which returns every piece (≥3 points). `_mask_to_rois` and `_mask_to_mip_rois` (renamed from `_mask_to_mip_roi`, now returns a list) emit one ROI per piece. When a slice/MIP holds more than one piece the names are suffixed `-1`, `-2`, ... to stay unique in Fiji. In the 2D MIP the dendrite is a single connected piece for 10 of 11 crops (projection reconnects branches); only crop16 has two separate dendrite pieces in the MIP.
+
+This change only ever *adds* outlines — it never removes or alters existing ROIs, and spine/neck IDs and counts are unchanged.
+
+---
+
 ### `detect_multi_head_spines` Enabled
 
 All 11 per-crop `Analysis_Settings.yaml` files updated from `False` to `True`. Analysis re-run on all crops (nnU-Net skipped — labels already existed). Results:
@@ -2290,7 +2322,7 @@ Old document was a technical deep-dive into model architectures, loss functions,
 
 | File | Change |
 |---|---|
-| `generate_fiji_rois.py` | Split single ROI zip into `_rois_3d.zip` and `_rois_mip.zip` |
+| `generate_fiji_rois.py` | Split ROI zip into `_rois_3d.zip` + `_rois_mip.zip`; switched primary source to RESPAN's instance volume (Validation_Vols channels 2/3), with label+CSV as fallback |
 | `images_analysis/crop*/Analysis_Settings.yaml` | `detect_multi_head_spines: True` in all 11 crops |
 | `batch-convertor/extract_channel.ijm` | Rewritten — general (no crop name requirement, 0-indexed channel) |
 | `batch-convertor/rename_for_nnunet.ijm` | New — renames training data to nnU-Net case format |

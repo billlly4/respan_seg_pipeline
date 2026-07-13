@@ -109,6 +109,8 @@ Output per image:
 
 ROIs are named `dendrite-Z{n}`, `spine_{id}-Z{n}`, `neck_{id}-Z{n}`. The `{id}` matches `spine_id` in the CSV.
 
+**ROI source:** the script reads RESPAN's own instance-separated volume from `Validation_Data/Validation_Vols/<name>.tif` (channel 2 = spines with their IDs, channel 3 = necks). These IDs match the CSV exactly, so ROIs are the same spines RESPAN counted and adjacent spines are never merged. If that file is missing (i.e. `save_val_volumes` was off), it falls back to connected components on the label TIF + centroid matching to the CSV.
+
 **To load in Fiji:** open the image → Analyze > Tools > ROI Manager > More > Open → select zip → check Show All.
 
 **Why ROIs:** to measure mean fluorescence intensity of a second or third channel (e.g. Lifeact-GFP, AMPAR) on the exact same per-spine/neck regions without re-running the pipeline.
