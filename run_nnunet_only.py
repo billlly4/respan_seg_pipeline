@@ -64,10 +64,16 @@ def make_predictor():
         verbose=False,
         allow_tqdm=True,
     )
+    # Pick whichever checkpoint the model actually has. A run cut short before
+    # the final epoch has checkpoint_best/latest but no checkpoint_final.
+    _fold_dir = os.path.join(model_folder, 'fold_all')
+    _ckpt = next((c for c in ('checkpoint_best.pth', 'checkpoint_final.pth',
+                              'checkpoint_latest.pth')
+                  if os.path.isfile(os.path.join(_fold_dir, c))), 'checkpoint_best.pth')
     predictor.initialize_from_trained_model_folder(
         model_folder,
         use_folds=('all',),
-        checkpoint_name='checkpoint_final.pth',
+        checkpoint_name=_ckpt,
     )
     return predictor
 

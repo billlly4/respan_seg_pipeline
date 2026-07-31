@@ -2338,3 +2338,107 @@ All scripts in place for the full pipeline end to end. Pending only on external 
 - [ ] Visual QC of crop6/7/8 (biggest model1→model2 drops)
 - [ ] CARE training (needs paired low/high SNR acquisitions)
 - [ ] SelfNet training (needs full-FOV stacks ≥27 Z planes)
+
+---
+
+## Day 18 — 2026-07-30
+
+### Goal — Migrate the pipeline from Mahti to CSC Roihu
+
+**Reason:** CSC is **shutting Mahti down in August 2026**. Roihu is its replacement, so the whole environment stack had to be rebuilt there. This session set up and GPU-verified both compute environments on Roihu.
+
+---
+
+### Roihu vs Mahti — the key differences
+
+| | Mahti | Roihu |
+|---|---|---|
+| GPU | NVIDIA A100 (x86_64) | **NVIDIA GH200 Grace-Hopper (aarch64 / ARM)** |
+| GPU login node | mahti.csc.fi | **roihu-gpu.csc.fi** (ARM) |
+| SSH | key only | **signed certificate (24h)** required, or web UI www.roihu.csc.fi |
+| GPU request | `--gres=gpu:a100:1` | `--gres=gpu:gh200:1` |
+| GPU partitions | gpusmall | `gputest` (15 min), `gpumedium` (36 h), `gpularge` |
+| Runtime modules | `gcc/10.4.0 cuda/12.1.1` | **`gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12`** |
+| Driver CUDA | 12.2 | 13.2 |
+
+Project number (`2019059`) and paths (`/scratch/project_2019059/`, `/projappl/project_2019059/`) are unchanged. **Critical constraint:** the GPU partition is ARM — software built on the ARM GPU login node only runs on GPU nodes, and every compiled package (torch, cupy, TF) must be an **aarch64** build. The Mahti containers do NOT transfer.
+
+---
+
+### Both containers rebuilt for aarch64 and GPU-verified
+
+Built with `conda-containerize new --prefix <path> <yaml>` on the **login node** (see gotcha below), installed to `/projappl/project_2019059/respan/envs/`:
+
+| Container | Contents | GPU test |
+|---|---|---|
+| `respaninternal` | torch 2.13.0+cu126, nnunetv2 2.8.1 | `torch.cuda.is_available()` → True, `NVIDIA GH200 120GB` ✅ |
+| `respandev` | cupy-cuda12x 13.6.0 + full RESPAN stack, numpy 1.26.4 | `cupy.arange(10).sum()` on GPU → 45 ✅ |
+
+torch came from `--extra-index-url https://download.pytorch.org/whl/cu126` (aarch64 wheels with Hopper sm_90 support). cupy-cuda12x has aarch64 wheels and finds CUDA via the loaded `cuda/12.6.3` module.
+
+---
+
+### Problems solved during the migration ("the twiking")
+
+| Problem | Cause | Fix |
+|---|---|---|
+| `Jobs to gpu partitions must be submitted with --gres=gpu:<gputype>:<count>` | Roihu requires the GPU type in the gres string | Use `--gres=gpu:gh200:1` (confirm type with `sinfo -p gputest -o "%G"`) |
+| `cuda/12.6.3` won't load | Depends on gcc first (same as Mahti) | `module load gcc/13.4.0 cuda/12.6.3` |
+| Container build killed at 85% (squashfs) | Built inside a 15-min `gputest` job → time limit | **Build containers on the login node** (no time limit); use the GPU node only for the import/GPU test |
+| `tensorflow[and-cuda]==2.16.1` install fails | Pins `nvidia-cudnn-cu12==8.9.7.29` — no aarch64 wheel (ARM cuDNN starts at 9.0) | bumped TF version |
+| `tensorflow[and-cuda]==2.18.1` install fails | Pins `nvidia-nccl-cu12==2.21.5` — no aarch64 wheel | dropped `[and-cuda]`, used plain `tensorflow` + system cuda/cudnn modules |
+
+---
+
+### Open blocker — GPU TensorFlow on aarch64 (CARE only)
+
+TensorFlow (needed only by CSBDeep/CARE) installs on aarch64 but the PyPI wheel is a **CPU-only build**: `tf.test.is_built_with_cuda()` → **False**, `list_physical_devices('GPU')` → `[]`, even with cuda/cudnn modules on `LD_LIBRARY_PATH`. `[and-cuda]` pulls the *same* CPU-only wheel, so it wouldn't help even if its nvidia pins resolved. **PyPI does not ship a GPU-enabled TensorFlow for aarch64** — GPU TF on GH200 only comes from NVIDIA's NGC container.
+
+**Decision:** keep CPU-only TF (TF 2.18.1 + csbdeep installed in respandev). It imports fine, so RESPAN never crashes, and CARE is dormant (no paired data). A support ticket was sent to servicedesk@csc.fi asking for the supported GPU-TF path on Roihu (module or NGC recipe). This does NOT block the active pipeline — nnU-Net + RESPAN analysis + cupy are all GPU-accelerated.
+
+**CSC reply (Ilari) + resolution:** GPU TensorFlow **is** available on Roihu as the **`python-tensorflow/2.21` module** (`built_with_cuda: True`). Two supported routes: (1) a venv on top of the module to add extra packages, or (2) build a container on their base image `satama.csc.fi/r_installation_aida/tensorflow`. **However**, the module is **Python 3.12 + numpy 2.4.6**, which clashes with respandev's **Python 3.10 + numpy 1.26.4 (`<2` pin)**. Since CARE runs inside `analyze_spines`, GPU-TF must share the environment with cupy and the full RESPAN stack — so using the module means rebuilding that entire stack on Python 3.12 / numpy 2 (and first confirming RESPAN tolerates numpy 2). That's a second heavy environment to build and validate. **Decision: record the solution and defer the GPU-CARE environment until CARE is actually needed**, at which point the venv-on-`python-tensorflow/2.21` route (CSC option 1) is built and validated against real CARE data. Current respandev (CPU TF) covers all present work.
+
+---
+
+### Status
+
+| Piece | Status |
+|---|---|
+| respaninternal (nnU-Net / torch) | ✅ built, GPU on GH200 |
+| respandev (RESPAN / cupy) | ✅ built, GPU on GH200 |
+| TensorFlow (CARE only) | ⚠️ CPU-only now; GPU available via `python-tensorflow/2.21` module — integration deferred (py3.12/numpy2 vs respandev py3.10/numpy<2) |
+
+---
+
+### Migration Validated End-to-End (2026-07-31)
+
+Code + model + data uploaded to `/scratch/project_2019059/respan/` via the CSC dashboard. Ran the full pipeline on the GH200 and confirmed it reproduces the local results exactly.
+
+**Two runtime fixes were needed:**
+
+1. **Missing `pyarrow`** — the RESPAN analysis import failed (`ModuleNotFoundError: No module named 'pyarrow'`) because the newer dask (2026.7.1) requires pyarrow for `dask.dataframe`; it wasn't in the Mahti `env_dev.yaml`. Added to respandev via `conda-containerize update`.
+
+2. **`run_nnunet_only.py` checkpoint name** — it hardcoded `checkpoint_final.pth`, but the Dataset002 model only has `checkpoint_best.pth`/`checkpoint_latest.pth` (the 24 h training was cut at 175 epochs, never wrote a "final"). `run_respan.py` already used `checkpoint_best`. Fixed `run_nnunet_only.py` to auto-detect the available checkpoint (best→final→latest); patched on Roihu with `sed` for immediate use.
+
+**Validation results** — both GPU paths confirmed on the GH200:
+- **nnU-Net segmentation** (respaninternal, torch 2.13): deleted crop14's labels, regenerated them with `run_nnunet_only.py` on the GH200.
+- **RESPAN analysis** (respandev, cupy): ran `run_respan.py` on all 11 crops; VRAM shows GPU use (`0.60/102.01 GB`), spine counts **identical to local model2**: crop14=19, crop15=17, crop16=13, crop21=10, crop22=7, crop23=10, etc.
+- **Closed loop**: Roihu-generated crop14 labels → Roihu analysis → 19 spines (same as local), proving segmentation + analysis are functionally identical on Roihu.
+
+**The whole pipeline now runs on Roihu.** Runtime recipe:
+```bash
+module load gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12
+cd /scratch/project_2019059/respan
+# segmentation (only for crops without labels):
+/projappl/project_2019059/respan/envs/respaninternal/bin/python run_nnunet_only.py
+# analysis + ROI export:
+/projappl/project_2019059/respan/envs/respandev/bin/python run_respan.py
+/projappl/project_2019059/respan/envs/respandev/bin/python generate_fiji_rois.py
+```
+
+### Next steps (when resumed)
+
+- [ ] Transfer code + data to Roihu (git clone or CSC dashboard)
+- [ ] Update scripts' module-load line to `gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12`; turn `CSC.md` into `ROIHU.md`
+- [ ] Smoke-test one crop end to end (nnU-Net → analysis) on Roihu
+- [ ] GPU-CARE env, only when CARE data is real: venv on `python-tensorflow/2.21` + RESPAN stack rebuilt on py3.12/numpy2 (verify RESPAN tolerates numpy 2)
