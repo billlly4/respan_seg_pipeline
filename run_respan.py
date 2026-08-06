@@ -173,11 +173,20 @@ def extract_neuron_channel(img, ch):
     raise ValueError(f'Unexpected image shape {img.shape}')
 
 
-def prepare_image(src_path, prep_dir, in_xy, in_z):
+def prepare_image(src_path, prep_dir, in_xy, in_z, model_xy=None, model_z=None):
     """
-    Extract the structural channel and save as <stem>_0000.tif with
-    ImageJ spacing metadata so nnU-Net can read the voxel size.
-    Images are passed at ORIGINAL resolution -- nnU-Net resamples internally.
+    Extract the structural channel and save as <stem>_0000.tif for nnU-Net.
+
+    nnU-Net/RESPAN use (1,1,1) spacing and never resample by physical size, so
+    when the image resolution differs from the model's native resolution we must
+    rescale here (the identical operation RESPAN's own nnunet_create_labels does:
+    resize by input_res/model_res). Pass model_xy/model_z (from the YAML's
+    model_resXY/model_resZ) to enable it; the label is rescaled back to the input
+    grid afterwards by _rescale_label_back().
+
+    Returns (out_path, orig_shape, model_shape):
+      orig_shape  = input-grid shape (used to rescale the label back)
+      model_shape = shape fed to nnU-Net before any Z padding
     """
     stem   = Path(src_path).stem
     out_path = os.path.join(prep_dir, f'{stem}_0000.tif')
@@ -185,6 +194,22 @@ def prepare_image(src_path, prep_dir, in_xy, in_z):
 
     img    = imread(src_path)
     neuron = extract_neuron_channel(img, NEURON_CHANNEL)
+    orig_shape = neuron.shape
+
+    # Rescale to the model's native voxel scale when a different model res is given.
+    rescale = (model_xy and model_z and
+               (abs(in_xy - model_xy) > 1e-9 or abs(in_z - model_z) > 1e-9))
+    if rescale:
+        from skimage.transform import resize
+        factors   = (in_z / model_z, in_xy / model_xy, in_xy / model_xy)
+        new_shape = tuple(max(1, int(round(d * f))) for d, f in zip(neuron.shape, factors))
+        neuron = resize(neuron.astype(np.float32), new_shape, order=1,
+                        mode='constant', preserve_range=True, anti_aliasing=True)
+        print(f'    rescaled to model res: {orig_shape} -> {neuron.shape}'
+              f'  (input {in_xy}/{in_z} um  ->  model {model_xy}/{model_z} um)')
+    model_shape = neuron.shape
+    save_xy = model_xy if rescale else in_xy
+    save_z  = model_z  if rescale else in_z
 
     # nnU-Net wants at least 8 Z planes; pad with zeros if needed
     if neuron.shape[0] < 8:
@@ -196,11 +221,27 @@ def prepare_image(src_path, prep_dir, in_xy, in_z):
         out_path,
         neuron.astype(np.float32),
         imagej=True,
-        metadata={'spacing': in_z, 'unit': 'um', 'axes': 'ZYX'},
-        resolution=(1 / in_xy, 1 / in_xy),
+        metadata={'spacing': save_z, 'unit': 'um', 'axes': 'ZYX'},
+        resolution=(1 / save_xy, 1 / save_xy),
     )
     print(f'    shape={neuron.shape}  -> {out_path}')
-    return out_path
+    return out_path, orig_shape, model_shape
+
+
+def _rescale_label_back(label_file, model_shape, orig_shape):
+    """
+    Rescale a nnU-Net label volume from the model grid back to the input grid.
+    Drops nnU-Net Z padding, then nearest-neighbour resizes (order=0) so integer
+    class labels are preserved. Overwrites label_file in place.
+    """
+    lab = imread(label_file)
+    lab = lab[:model_shape[0], :model_shape[1], :model_shape[2]]   # drop Z pad
+    if tuple(lab.shape) != tuple(orig_shape):
+        from skimage.transform import resize
+        lab = resize(lab, orig_shape, order=0, mode='constant',
+                     preserve_range=True, anti_aliasing=False)
+    imwrite(label_file, lab.astype(np.uint8), imagej=True, metadata={'axes': 'ZYX'})
+    print(f'    labels rescaled back to input grid: {tuple(orig_shape)}')
 
 
 # ---------------------------------------------------------------------------
@@ -272,8 +313,10 @@ def _make_settings(cfg, out_dir):
 
     s.input_resXY = in_xy
     s.input_resZ  = in_z
-    # Set model_res == input_res so RESPAN skips label rescaling
-    # (nnU-Net already handled resampling internally)
+    # For the ANALYSIS stage model_res must equal input_res so analyze_spines
+    # does not rescale: run_respan already rescaled the label back onto the input
+    # grid (see prepare_image / _rescale_label_back). The model's native
+    # resolution (YAML model_resXY/Z) is applied earlier, at the nnU-Net step.
     s.model_resXY = in_xy
     s.model_resZ  = in_z
 
@@ -480,7 +523,12 @@ def process_image(img_path, out_dir, yaml_src, cfg, checkpoint_name='checkpoint_
     print('\n[1/3]  Preparing image for nnU-Net...')
     in_xy = float(cfg.get('input_resXY', 0.102))
     in_z  = float(cfg.get('input_resZ',  0.200))
-    prepare_image(img_link, prep_dir, in_xy, in_z)
+    # model_resXY/Z = the model's native resolution (from YAML). If it differs
+    # from the image resolution, prepare_image rescales to it and the label is
+    # rescaled back below. Defaults to input res (no rescale) when omitted.
+    mdl_xy = float(cfg.get('model_resXY', in_xy))
+    mdl_z  = float(cfg.get('model_resZ',  in_z))
+    _prep, orig_shape, model_shape = prepare_image(img_link, prep_dir, in_xy, in_z, mdl_xy, mdl_z)
 
     # --- Step 2: nnU-Net ---
     label_file = os.path.join(labels_dir, f'{stem}.tif')
@@ -490,6 +538,10 @@ def process_image(img_path, out_dir, yaml_src, cfg, checkpoint_name='checkpoint_
     else:
         print('\n[2/3]  Running nnU-Net segmentation...')
         run_nnunet(prep_dir, labels_dir, checkpoint_name)
+        # If we rescaled the image to the model grid, put the label back on the
+        # original input grid so RESPAN measures at the true resolution.
+        if (abs(in_xy - mdl_xy) > 1e-9 or abs(in_z - mdl_z) > 1e-9):
+            _rescale_label_back(label_file, model_shape, orig_shape)
 
     # --- Step 3: RESPAN analysis ---
     print('\n[3/3]  Running RESPAN spine analysis...')

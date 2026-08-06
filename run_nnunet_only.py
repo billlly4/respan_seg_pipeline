@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # Import shared functions and constants from run_respan
 from run_respan import (
     DATASETS_ROOT, NNUNET_REPO, NNUNET_RESULTS, MODEL_DIR,
-    load_yaml, find_datasets, prepare_image,
+    load_yaml, find_datasets, prepare_image, _rescale_label_back,
 )
 
 # Set nnUNet env vars BEFORE importing nnunetv2 (paths.py reads them at import time)
@@ -95,6 +95,8 @@ def main():
         cfg   = load_yaml(yaml_path)
         in_xy = float(cfg.get('input_resXY', 0.102))
         in_z  = float(cfg.get('input_resZ',  0.200))
+        mdl_xy = float(cfg.get('model_resXY', in_xy))
+        mdl_z  = float(cfg.get('model_resZ',  in_z))
 
         for tif in tif_paths:
             stem       = Path(tif).stem
@@ -109,8 +111,9 @@ def main():
                 continue
 
             print('  Preparing input...')
-            prepare_image(tif, prep_dir, in_xy, in_z)
-            to_predict.append((tif, prep_dir, labels_dir))
+            _p, orig_shape, model_shape = prepare_image(tif, prep_dir, in_xy, in_z, mdl_xy, mdl_z)
+            need_rescale = (abs(in_xy - mdl_xy) > 1e-9 or abs(in_z - mdl_z) > 1e-9)
+            to_predict.append((tif, prep_dir, labels_dir, orig_shape, model_shape, need_rescale))
 
     if not to_predict:
         print('\nAll images already have labels.')
@@ -120,7 +123,7 @@ def main():
     print('\n  Loading nnU-Net model...')
     predictor = make_predictor()
 
-    for tif, prep_dir, labels_dir in to_predict:
+    for tif, prep_dir, labels_dir, orig_shape, model_shape, need_rescale in to_predict:
         print(f'\n  Running nnU-Net: {Path(tif).name}')
         os.makedirs(labels_dir, exist_ok=True)
         predictor.predict_from_files(
@@ -137,6 +140,12 @@ def main():
         for f in os.listdir(labels_dir):
             if not f.endswith('.tif'):
                 os.remove(os.path.join(labels_dir, f))
+        # If the image was rescaled to the model grid, put the label back on the
+        # original input grid so RESPAN analysis measures at the true resolution.
+        if need_rescale:
+            label_file = os.path.join(labels_dir, f'{Path(tif).stem}.tif')
+            if os.path.isfile(label_file):
+                _rescale_label_back(label_file, model_shape, orig_shape)
         print(f'  Done -> {labels_dir}')
 
     print('\n' + '=' * 65)
