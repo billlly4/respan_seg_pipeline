@@ -2442,3 +2442,95 @@ cd /scratch/project_2019059/respan
 - [ ] Update scripts' module-load line to `gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12`; turn `CSC.md` into `ROIHU.md`
 - [ ] Smoke-test one crop end to end (nnU-Net → analysis) on Roihu
 - [ ] GPU-CARE env, only when CARE data is real: venv on `python-tensorflow/2.21` + RESPAN stack rebuilt on py3.12/numpy2 (verify RESPAN tolerates numpy 2)
+
+---
+
+## Day 19 — 2026-07-31
+
+### New microscope/data evaluation + resolution-handling fix
+
+New image sets arrived from **two microscopes** for choosing which to commit the next study to, and for building a new fine-tuned model. Files in `new_images_to_check/Arash_Vignesh/` (later moved into `old_stuff_to_compare/`, gitignored).
+
+**The two sources:**
+
+| Source | Modality | XY / Z | Notes |
+|---|---|---|---|
+| Olympus FV4000 | point-scanning (laser-scanning) confocal | 0.096 / 0.200 µm | 3 images, `RFP+PSD95` samples |
+| Zeiss LSM990 AiryScan | super-resolution (Airyscan) | 0.043 / 0.150 µm | raw + deconvolved variants |
+
+---
+
+### Image-quality review (measured, not guessed)
+
+- **Olympus is saturated** — max = 65535 (16-bit ceiling) on all three. Saturation is the *cause* of the "glow" (clipped bright shaft spreads its PSF into a halo) and destroys intensity information. At 96/200 nm, thin spine necks are at/below resolution → "disconnected necks."
+- **Zeiss AiryScan is not saturated** (max ~26k), resolves necks (43 nm), Z (150 nm) matches the model native. Downside: **dense multi-dendrite fields** and a **granular/punctate fill** ("patches") — the deconvolved variant sharpens the granularity into more separated puncta.
+- **The RESPAN model (Dataset226) modality = "Spinning-disk confocal and Airyscan / laser-scanning confocal"** — so the Zeiss AiryScan is *literally one of the training modalities*.
+
+**Decision: Zeiss LSM990 AiryScan, RAW, channel C2.** Rationale: Airyscan matches the model's training modality; 43 nm resolves necks; not saturated (preserves the intensity readout the thesis needs); Z matches the model. Olympus's saturation is an unfixable, disqualifying loss for a quantitative intensity study. Raw chosen over deconvolved to keep intensities quantitatively faithful (both segmented near-identically in testing).
+
+---
+
+### The channel (C2) and the markers
+
+The Zeiss `.czi` is **3-channel** (metadata labels every slice `c:2/3`); full file shape `(25, 3, 1208, 1560)` = Z, C, Y, X. The ZEN acquisition screenshots identified the fluorophores:
+
+| Ch | Dye | Ex / Em | Role |
+|---|---|---|---|
+| C1 | AF647 | 639 / 671 (far-red) | Alexa-647 immunostain — synaptic reference (PSD95-type) |
+| **C2** | **mScarlet** | 561 / 594 (red) | **red-FP cell fill → RESPAN segmentation** |
+| C3 | EGFP | 488 / 509 (green) | the "EGFP LTP" construct — functional readout, measured inside spine masks |
+
+**Committed to C2 (mScarlet)** — all crops use it. Design: C2 (mScarlet fill) = shape/segmentation; C3 (EGFP) = functional LTP signal measured inside the RESPAN spine masks; C1 (AF647) = synaptic reference stain.
+
+**New marker vs the previous dataset:** Ellinoora's structural channel was **Lifeact-EGFP** (an F-actin marker — enriched in spine heads, *sparse in thin necks*). The new fill is **mScarlet**, a **soluble cytoplasmic fill** that labels shaft + head + **neck** uniformly — so it's actually a *better* neck marker than Lifeact. Plus the new data is far finer (**43/150 nm** vs Ellinoora's **132/410 nm**), so necks are physically resolvable now (they weren't at 410 nm Z). Colour (red vs green) is irrelevant to nnU-Net (grayscale). Net: the new C2 is a *different and better* structural channel — which is also why the base model needs fine-tuning (genuinely new marker + modality + scale).
+
+**Acquisition quality (verified from ZEN):** 63×/1.40 oil, Airyscan SuperResolution, all lasers **0.4%** transmission (C2 = 561 nm @ 0.4%), GaAsP-PMT @ 850 V, **not saturated** (C2 max 25,941 / 65,535 ≈ 40% of range, so intensities are quantitative and there's headroom). Sampling is ~Nyquist for Airyscan SR. **Verdict: quantitative-grade, well-suited to RESPAN.** The only optional tweak would be 2× averaging to smooth the granular super-res fill — not required (fine-tuning handles the texture). The missing necks are the *untuned base model + dense whole field*, **not** the acquisition settings.
+
+**Principle recorded:** RESPAN segments *shape*, so it needs a continuous **fill** channel (C2/mScarlet). A punctate/functional marker is NOT fed to nnU-Net — it is measured *inside* the RESPAN spine masks afterward. Train and infer on the **same** fill channel.
+
+---
+
+### Resolution-handling fix in run_respan.py (important)
+
+Testing the base Dataset226 (native 65 nm / 150 nm) on the new resolutions exposed a real bug: **run_respan.py hardcoded `model_res = input_res` and never rescaled** — so nnU-Net always saw the raw voxel grid. RESPAN's own `nnunet_create_labels` *does* rescale (input_res→model_res, then labels back), but run_respan bypasses it because it runs nnU-Net in a separate environment (respaninternal; respandev has no torch).
+
+**Fixed** (`run_respan.py` + `run_nnunet_only.py`):
+- `prepare_image` now takes `model_xy/model_z` and rescales the image to the model's native voxel scale (`skimage.resize` by `input_res/model_res` — the identical operation RESPAN does).
+- New `_rescale_label_back()` puts the label back on the input grid after prediction (nearest-neighbour, integer labels preserved).
+- `process_image` reads `model_resXY/Z` from the YAML instead of the hardcode.
+- Backward compatible: when `input_res == model_res` (e.g. Ellinoora, and any model fine-tuned at native res) the rescale is skipped → byte-identical to before. **So prior results remain valid** — the hardcode only ever mattered when using a model at a *different* resolution than the data.
+
+**Also audited for other YAML-ignoring hardcodes:** `model_type = 4` (correct for Datasets 226/002; only matters if a differently-structured model is used) and `image_restore/axial_restore = False` (CARE/SelfNet hardcoded off — fine, not in use). Neither affects current results.
+
+Two YAMLs were set up per the fix: `input_res` = true image res, `model_res` = 0.065/0.150 (Dataset226 native), so each image is rescaled to the model scale for nnU-Net and labels returned on the native grid.
+
+---
+
+### Base-model test results (Dataset226 on the new data)
+
+Ran Dataset226 over both microscopes (2 Zeiss + 3 Olympus) locally on the RTX 3060 Laptop GPU. Findings:
+
+- **Model handles the patchy Zeiss dendrite** — segments it as a solid continuous dendrite despite the granular fill. Good.
+- **Missing necks everywhere** — ~55–59% of detected spines are "partial" (no neck reaching the dendrite), both microscopes. Diagnosed causes (ranked):
+  1. **Whole-field, dense culture** — spines detected on every neurite; only thick processes labelled dendrite; spines on thin neurites/axons are orphaned → partial. (Ellinoora single-dendrite crops ran ~5% partial by contrast.)
+  2. **Base model under-predicts the neck class on this new modality** — necks are only ~4% of spine voxels in the raw nnU-Net output; out-of-distribution. This is what fine-tuning fixes.
+  3. Minor: Olympus saturation/glow eats necks; thin necks near voxel limit.
+- **Necks ARE present in the raw Zeiss signal** (visible on zoom) → not a data or channel problem. The fix is fine-tuning, not denoising.
+
+**On denoising:** RESPAN has CARE (denoise) + SelfNet (axial) built in, but both need trained models (CARE needs paired low/high-SNR data; SelfNet needs ≥27-plane stacks) — not available, and run_respan hardcodes them off anyway. **Not needed:** fine-tuning the segmentation directly teaches the model the granular fill + necks. No custom denoiser required.
+
+---
+
+### Plan for the new Zeiss model
+
+1. Zeiss AiryScan, **C2**, raw; keep crops at **native 43/150** (fine-tune AND infer at native → `input_res == model_res`, no rescale needed for the new model).
+2. Crop single dendrites; correct base-model labels in Fiji with **careful neck annotation** (`manual_fixing_labels` macros).
+3. ~10–15 corrected crops → `rename_for_nnunet.ijm` → `train_nnunet.py finetune` from Dataset226 → run on the GH200.
+4. Analyze with the new model. Expect neck detection to jump (as spine Dice did on Ellinoora).
+
+### Files changed (Day 19)
+
+| File | Change |
+|---|---|
+| `run_respan.py` | `prepare_image` rescales input→model res; new `_rescale_label_back`; `process_image` reads `model_res` from YAML (removed the hardcode's effect) |
+| `run_nnunet_only.py` | Same rescale-in / label-back, for parity on Roihu |
