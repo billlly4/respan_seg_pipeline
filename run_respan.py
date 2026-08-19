@@ -23,8 +23,10 @@ into a per-image subfolder:
             RESPAN_analysis.log
             Analysis_Settings.yaml    <- copy of the settings used
 
-HOW TO RUN:
-    C:/Users/ARASH/Anaconda3/envs/respandev/python.exe  f:/ResPan/run_respan.py
+HOW TO RUN (call the respandev Python by full path):
+    <respandev-python>  run_respan.py
+      # Windows (conda): <Anaconda>/envs/respandev/python.exe  run_respan.py
+      # Roihu (Tykky):   /projappl/project_2019059/respan/envs/respandev/bin/python  run_respan.py
 
     Optional: process only specific dataset folders by passing their names:
     ... run_respan.py  inference_cortical  inference_hippo
@@ -473,7 +475,7 @@ def check_cupy():
             _respandev = '/projappl/project_2019059/respan/envs/respandev/bin/python'
             print(f'  {_respandev} {__file__}')
         else:
-            print(f'  C:\\Users\\ARASH\\Anaconda3\\envs\\respandev\\python.exe {__file__}')
+            print(f'  <Anaconda>\\envs\\respandev\\python.exe {__file__}')
         print('!' * 65 + '\n')
         sys.exit(1)
 

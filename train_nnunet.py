@@ -1,8 +1,8 @@
 """
 nnU-Net Training Pipeline (via respaninternal)
 ==============================================
-Sets up an nnU-Net dataset from f:/ResPan/training_data/ and runs
-plan_and_preprocess + training, exactly as RESPAN does internally.
+Sets up an nnU-Net dataset from the training_data/ folder (next to this script)
+and runs plan_and_preprocess + training, exactly as RESPAN does internally.
 
 Dataset layout expected in TRAINING_DATA:
     imagesTr/   <image_name>.tif   -- raw fluorescence images (single channel)

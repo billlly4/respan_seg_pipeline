@@ -14,12 +14,12 @@ Output:
         CAREdata/                -- extracted patch cache (.npz)
 
 HOW TO RUN (defaults from config block below):
-    C:/Users/ARASH/Anaconda3/envs/respandev/python.exe  f:/ResPan/train_care.py
+    <respandev-python>  train_care.py
 
 OVERRIDE ANY PARAMETER FROM THE COMMAND LINE:
     python train_care.py --epochs 150 --steps_per_epoch 400 --num_patches 100
     python train_care.py --patch_size 8,64,64 --unet_n_depth 3 --batch_size 16
-    python train_care.py --data f:/path/to/data --output f:/path/to/out --name my_model
+    python train_care.py --data path/to/data --output path/to/out --name my_model
     python train_care.py --augmentation         # enable rotation augmentation
 
 PARAMETER MEANINGS:

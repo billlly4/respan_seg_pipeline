@@ -12,11 +12,11 @@ How it works (3 internal steps inside SelfNet_Model_Training.py):
   Step 3  train_self_net             Train the CycleGAN on those patches
 
 HOW TO RUN (default: 280622 hippo stack, 3 test epochs):
-    C:/Users/ARASH/Anaconda3/envs/respaninternal/python.exe  f:/ResPan/train_selfnet.py
+    <respaninternal-python>  train_selfnet.py
 
 OVERRIDE ANY PARAMETER FROM THE COMMAND LINE:
     python train_selfnet.py --epochs 40 --batch_size 8
-    python train_selfnet.py --images f:/path/to/a.tif f:/path/to/b.tif --scale 0.41
+    python train_selfnet.py --images path/to/a.tif path/to/b.tif --scale 0.41
     python train_selfnet.py --min_v 0 --max_v 255 --bg_threshold 10
 
 PARAMETER MEANINGS:
