@@ -60,9 +60,30 @@ NNUNET_BASE   = str(_BASE / 'nnunet_training')
 DATASET_ID   = 1
 DATASET_NAME = f'Dataset{DATASET_ID:03d}_Spines'
 
-_mahti_py             = '/projappl/project_2019059/respan/envs/respaninternal/bin/python'
-_win_py               = r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe'
-RESPANINTERNAL_PYTHON = _mahti_py if os.path.exists(_mahti_py) else _win_py
+# Locate the 'respaninternal' env's Python portably (no hardcoded project/user):
+#   1. $RESPAN_RESPANINTERNAL_PYTHON override, else
+#   2. a sibling env 'respaninternal' next to the launching interpreter
+#      (works on Windows conda AND Roihu Tykky), else
+#   3. author-machine fallbacks.
+def _sibling_env_python(env_name):
+    for parent in Path(sys.executable).parents:
+        if parent.name == 'envs':
+            for cand in (parent / env_name / 'bin' / 'python',
+                         parent / env_name / 'python.exe'):
+                if cand.exists():
+                    return str(cand)
+            break
+    return None
+
+_FALLBACK_INTERNAL = [
+    '/projappl/project_2019059/respan/envs/respaninternal/bin/python',
+    r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe',
+]
+RESPANINTERNAL_PYTHON = (
+    os.environ.get('RESPAN_RESPANINTERNAL_PYTHON')
+    or _sibling_env_python('respaninternal')
+    or next((f for f in _FALLBACK_INTERNAL if os.path.exists(f)), _FALLBACK_INTERNAL[-1])
+)
 NNUNET_REPO           = str(_BASE / 'nnUNet')
 
 # Label scheme for from-scratch training
@@ -104,7 +125,7 @@ DATASET_DIR      = os.path.join(RAW_DIR, DATASET_NAME)
 IMAGES_TR        = os.path.join(DATASET_DIR, 'imagesTr')
 LABELS_TR        = os.path.join(DATASET_DIR, 'labelsTr')
 
-_ON_MAHTI = os.path.exists(_mahti_py)
+_ON_MAHTI = os.path.isdir('/projappl')   # CSC Tykky: run nnU-Net directly, not nested
 
 
 def _nnunet_env():

@@ -68,10 +68,31 @@ DEFAULT_NAME   = 'selfnet_test'
 SELFNET_SCRIPT = str(_BASE / 'cloned_respan' / 'RESPAN' / 'Scripts' / 'SelfNet_Model_Training.py')
 NNUNET_REPO    = str(_BASE / 'nnUNet')
 
-_mahti_py         = '/projappl/project_2019059/respan/envs/respaninternal/bin/python'
-_win_py           = r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe'
-RESPANINTERNAL_PY = _mahti_py if os.path.exists(_mahti_py) else _win_py
-_ON_MAHTI         = os.path.exists(_mahti_py)
+# Locate the 'respaninternal' env's Python portably (no hardcoded project/user):
+#   1. $RESPAN_RESPANINTERNAL_PYTHON override, else
+#   2. a sibling env 'respaninternal' next to the launching interpreter
+#      (works on Windows conda AND Roihu Tykky), else
+#   3. author-machine fallbacks.
+def _sibling_env_python(env_name):
+    for parent in Path(sys.executable).parents:
+        if parent.name == 'envs':
+            for cand in (parent / env_name / 'bin' / 'python',
+                         parent / env_name / 'python.exe'):
+                if cand.exists():
+                    return str(cand)
+            break
+    return None
+
+_FALLBACK_INTERNAL = [
+    '/projappl/project_2019059/respan/envs/respaninternal/bin/python',
+    r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe',
+]
+RESPANINTERNAL_PY = (
+    os.environ.get('RESPAN_RESPANINTERNAL_PYTHON')
+    or _sibling_env_python('respaninternal')
+    or next((f for f in _FALLBACK_INTERNAL if os.path.exists(f)), _FALLBACK_INTERNAL[-1])
+)
+_ON_MAHTI = os.path.isdir('/projappl')   # CSC Tykky: run SelfNet directly, not nested
 
 
 # ---------------------------------------------------------------------------

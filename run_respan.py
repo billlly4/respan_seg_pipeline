@@ -66,10 +66,38 @@ def _find_model(model_folder):
 
 MODEL_DIR = _find_model(_BASE / 'images_analysis' / 'model')
 
-_mahti_py = '/projappl/project_2019059/respan/envs/respaninternal/bin/python'
-_win_py   = r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe'
-RESPANINTERNAL_PYTHON = _mahti_py if os.path.exists(_mahti_py) else _win_py
-_ON_MAHTI = os.path.exists(_mahti_py)
+# Locate the 'respaninternal' env's Python (nnU-Net runs there, a separate env).
+# Portable — no hardcoded project/user. Resolution order:
+#   1. $RESPAN_RESPANINTERNAL_PYTHON            (explicit override, if set)
+#   2. a sibling env named 'respaninternal' next to the interpreter running this
+#      script — works for Windows conda AND Roihu Tykky, and derives the
+#      project/user location automatically from sys.executable
+#   3. author-machine fallbacks (last resort)
+def _sibling_env_python(env_name):
+    """Path to a sibling env's python (…/envs/<env_name>/…) relative to the
+    interpreter that launched this script, or None."""
+    for parent in Path(sys.executable).parents:
+        if parent.name == 'envs':
+            for cand in (parent / env_name / 'bin' / 'python',
+                         parent / env_name / 'python.exe'):
+                if cand.exists():
+                    return str(cand)
+            break
+    return None
+
+_FALLBACK_INTERNAL = [
+    '/projappl/project_2019059/respan/envs/respaninternal/bin/python',
+    r'C:\Users\ARASH\Anaconda3\envs\respaninternal\python.exe',
+]
+RESPANINTERNAL_PYTHON = (
+    os.environ.get('RESPAN_RESPANINTERNAL_PYTHON')
+    or _sibling_env_python('respaninternal')
+    or next((f for f in _FALLBACK_INTERNAL if os.path.exists(f)), _FALLBACK_INTERNAL[-1])
+)
+
+# On CSC (Tykky), a container can't launch another container, so nnU-Net must be
+# run as a separate step (run_nnunet_only.py) instead of a subprocess from here.
+_ON_MAHTI = os.path.isdir('/projappl')
 
 NNUNET_RESULTS = str(Path(MODEL_DIR).parent)
 _m = re.match(r'Dataset(\d+)', Path(MODEL_DIR).name)
