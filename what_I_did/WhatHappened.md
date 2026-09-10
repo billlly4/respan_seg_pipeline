@@ -2534,3 +2534,108 @@ Ran Dataset226 over both microscopes (2 Zeiss + 3 Olympus) locally on the RTX 30
 |---|---|
 | `run_respan.py` | `prepare_image` rescales input→model res; new `_rescale_label_back`; `process_image` reads `model_res` from YAML (removed the hardcode's effect) |
 | `run_nnunet_only.py` | Same rescale-in / label-back, for parity on Roihu |
+
+---
+
+## Day 20 — 2026-08-10
+
+### Portability refactor (clone-and-go) + git cleanup incident
+
+#### 1. Interpreter auto-detection — no more hardcoded paths
+
+The scripts hardcoded the interpreter locations (`_mahti_py = /projappl/project_2019059/...`, `_win_py = C:\Users\ARASH\...`), so a new user cloning the repo would have to hand-edit project number, username, and env paths. Fixed so it's **clone-and-go**.
+
+Key idea: you always *launch* `run_respan.py` with the **respandev** Python, so `sys.executable` already tells us where the envs live, and **`respaninternal` sits as a sibling** of `respandev` under the same `envs/` dir. So the interpreter is derived from `sys.executable` — works identically on Windows conda and Roihu Tykky (derives the project/user location automatically). Resolution order:
+1. `$RESPAN_RESPANINTERNAL_PYTHON` (explicit override, for differently-named envs)
+2. sibling env `respaninternal` next to the launching interpreter (the auto path)
+3. author-machine fallbacks (last resort)
+
+`_ON_MAHTI` now detects the cluster via `os.path.isdir('/projappl')` instead of a hardcoded project path.
+
+Applied to `run_respan.py`, `train_selfnet.py`, `train_nnunet.py`. `train_care.py` needed nothing (CARE runs in respandev directly, no separate interpreter). Verified: auto-detection resolves the sibling `respaninternal` correctly; no leftover `_mahti_py`/`_win_py` references; all four scripts parse.
+
+**What a new person now does:** clone → create two envs named **`respandev`** and **`respaninternal`** → launch with the respandev Python. No path editing. Only conventions left are the env *names* and the folder layout (`images_analysis/model/`, `images_analysis/images/`), both documented.
+
+#### 2. Cosmetic path cleanup
+Stripped hardcoded local paths (`C:/Users/ARASH/...`, `f:/ResPan/...`) from the docstrings/print hints in `run_respan.py`, `train_selfnet.py`, `train_care.py`, `train_nnunet.py` — replaced with generic placeholders. The functional `_win_py` fallback stays (it needs a real path for local runs; gated so Roihu never uses it).
+
+#### 3. `_fix_tifffile_compression.py`
+Confirmed it is a **one-time patch already applied** to `cloned_respan` (the tifffile `compression=` API fix, Day 3). Not needed at runtime; only useful if RESPAN is ever re-cloned fresh. Safe to delete.
+
+#### 4. Syncing to Roihu
+Code-only changes → **no container rebuild needed**. Re-upload the changed `.py` files (dashboard, overwrite): `run_respan.py`, `run_nnunet_only.py`, `train_nnunet.py`, `train_selfnet.py`, `generate_fiji_rois.py`. Auto-detection works on Roihu because the Tykky envs share the same `envs/` sibling layout. Runtime recipe unchanged (module load + two commands).
+
+#### 5. IDE warnings (harmless)
+Pylance flags `from RESPAN.ImageAnalysis... import` and `import cupy` as "could not be resolved". Both are static-analysis-only: `RESPAN` is added to `sys.path` at runtime (line ~461, so the import is deliberately inside the function), and `cupy` lives in the respandev env (not the IDE's interpreter). No runtime effect. Silence by pointing the IDE interpreter at respandev + adding `cloned_respan` to `python.analysis.extraPaths`, or ignore.
+
+---
+
+### GitHub push blocked — big files in history (NOT yet resolved)
+
+`git push` fails: the push is ~4 GB and includes **model checkpoints of ~1 GB each**, which exceed GitHub's **100 MB/file hard limit** (→ `HTTP 500`). Cause: model checkpoints + analysis outputs were committed to git (git should be code-only). The ~6 GB of checkpoints are in history under:
+- `images_analysis/model/.../checkpoint_best.pth` + `checkpoint_latest.pth` (2 × 1.07 GB)
+- `old_stuff_to_compare/.../` — four more ~1 GB checkpoints (Dataset226/002/001)
+
+**Incident + recovery:** made a full backup bundle (`F:\ResPan_backup.bundle`, 4.0 GB), then ran `git filter-repo --path images_analysis --invert-paths` to strip it from history. **filter-repo does a hard reset of the working tree, so it DELETED `images_analysis` from disk** (I had wrongly said it wouldn't). Recovered fully by fetching the original history from the backup bundle and `git reset --hard` — `images_analysis` (2.1 GB, model intact) and all data restored, `origin` re-added.
+
+**Lesson:** `git filter-repo` on a working repo deletes the files it removes from history. The safe procedure is: filter-repo → **immediately restore the data folders from the backup** (as untracked) → gitignore them → commit + push. Or run filter-repo on a separate `--mirror` clone so the working tree is never touched.
+
+**Status: push still NOT fixed** — the cleanup was paused after the scare and everything was restored to the original state. Backup bundle is safe. To be done later (user will drive the commits/pushes; no Claude co-author tag).
+
+---
+
+### Files changed (Day 20)
+
+| File | Change |
+|---|---|
+| `run_respan.py` | interpreter auto-detection (sibling env + env-var override); `_ON_MAHTI` via `/projappl`; cosmetic path cleanup in docstring/print |
+| `train_selfnet.py` | interpreter auto-detection; docstring cleanup |
+| `train_nnunet.py` | interpreter auto-detection; docstring cleanup |
+| `train_care.py` | docstring cleanup only |
+
+---
+
+## Day 21 — Manual label correction: neck-continuity decisions
+
+Started hand-correcting the Aug-20 Zeiss crops for fine-tuning, focusing on spine necks (the base model's weak point). Two annotation questions came up and were resolved:
+
+**Should necks be continuous or left disconnected?** Continuous. A spine is by definition a protrusion physically joined to the dendrite shaft, so the neck *is* that connection — a truly broken neck isn't a real spine. The discontinuities seen in many crops are imaging artifacts, not real gaps: the neck is thin (~50–200 nm, at/below XY resolution), dim (little fill volume), and crosses between the coarse 150 nm Z-planes, so it drops out over short spans. Ground truth should reflect the biology, so short artifact gaps are bridged with a thin continuous neck along the plausible head→dendrite path, after checking adjacent Z-planes.
+
+**But isn't labeling zero-signal voxels teaching the model to hallucinate?** Valid concern, handled by: (1) raising display contrast first — most "gaps" are low signal, not absent, and labeling faint-but-real trace is truthful; (2) bridging only short gaps that have signal on both sides; (3) never drawing neck across long, truly empty spans with no trace and no nearby dendrite (that would teach fabrication — those are left disconnected or the spine is dropped).
+
+The tension between "connect the biologically-continuous neck" and "don't label empty voxels" is fundamentally a limit of the data, not of the annotator. **You may eventually be able to say that annotation uncertainty and imaging-domain differences are both limiting factors in the segmentation of fine structures such as spine necks.**
+
+---
+
+## Day 22 — First Zeiss fine-tune on Roihu (and three PyTorch-version fixes)
+
+Fine-tuned the base model (Dataset226) on the **11 corrected Zeiss crops** on Roihu. Getting `train_nnunet.py` to actually train exposed a chain of issues — none in our data, all from Roihu running a **much newer PyTorch (≥2.6)** than Mahti did. The pipeline code was identical; only the environment changed.
+
+#### 1. Generalised the fine-tune source — `--from` / `--name`
+Previously `train_nnunet.py` hardcoded the base model as Dataset226 in `cloned_respan/`. Added:
+- **`--from <model folder>`** — fine-tune from *any* nnU-Net model folder (226, an earlier fine-tune, etc.). It reads that folder's `plans.json` + `dataset.json` + `fold_all/checkpoint` (fallback `final`→`best`→`latest`) and parses its Dataset ID. Default stays 226, so old behaviour is unchanged. Every RESPAN model is the same self-contained format, so 226 is no longer special — models can be chained `226 → v1 → v2 …`.
+- **`--name <suffix>`** — names the output `Dataset###_<name>`; the numeric ID is **auto-assigned** to the next free number (nnU-Net requires a numeric ID, but you never type it). `--id` still forces a number when needed.
+
+#### 2. Naming rule for `training_data/`
+`setup()` pairs an image with its label by **identical filename**, then writes the real nnU-Net dataset itself (adds `_0000` to the image, keeps the label bare). Confirmed by checking file contents (imagesTr = uint16 intensity, labelsTr = uint8 masks 0–5) — folders weren't swapped, just named image-bare / label-`_0000`. Built `training_data/` with matching names; `setup` produced `case001_0000.tif` + `case001.tif` correctly for all 11 crops.
+
+#### 3. Three PyTorch-version incompatibilities (old nnU-Net + new torch)
+| Error | Cause | Fix |
+|---|---|---|
+| `LRScheduler.__init__() takes 2–3 positional args but 4 were given` | PyTorch ≥2.4 removed the `verbose` arg | `polylr.py`: pass `verbose` only if the installed torch still accepts it (version-guarded) |
+| `Weights only load failed … numpy._core.multiarray.scalar` | PyTorch 2.6 flipped `torch.load` default to `weights_only=True`, rejecting the trusted RESPAN checkpoint | `_patch_torch_load()` in `train_nnunet.py`: default `weights_only=False` for every nnU-Net load |
+| Training **hung at `Epoch 0`** (GPU idle) | `fork` start method deadlocks once CUDA is initialised — nnU-Net's dataloader workers hang | force **`spawn`** start method + put `NNUNET_REPO` on `PYTHONPATH` so spawned workers can import nnunetv2 |
+
+All three are compatibility shims that restore the old behaviour — none change training. `/dev/shm` was ruled out as a cause (240 GB, healthy).
+
+#### 4. Resource / speed fixes
+- The sbatch job defaulted to **1 CPU** (`NumCPUs=1`) → dataloader starved. Added `--cpus-per-task=16`.
+- With `nnUNet_n_proc_DA=0` (single-threaded augmentation, the deadlock workaround) an epoch took **665 s** — too slow for the wall. After the `spawn` fix, re-enabled `nnUNet_n_proc_DA=8` → **~120 s/epoch** (GPU no longer starved). Also added `PYTHONUNBUFFERED=1` so the sbatch `.out` shows progress live (nnU-Net's own `fold_all/training_log_*.txt` flushes per-epoch regardless).
+
+#### 5. Result — training healthy, necks learning
+`Dataset001_ZeissV1` fine-tune running well. Pseudo-dice columns are `[dendrite, core, shell, neck, soma, axon]`. By epoch 14:
+- dendrite **0.96**, core **0.88**, shell **0.81**, **neck 0.82** (0.0 → 0.62 → … → 0.82) — the neck class, the whole point of the fine-tune, is learning strongly.
+- soma / axon = **0.0** — those classes are essentially absent in the Zeiss crops, so nothing to score; expected and harmless.
+- ~120 s/epoch → ~300 epochs in ~10 h. Checkpoints saved continuously; stop when the EMA pseudo-Dice plateaus and promote `checkpoint_best.pth`, then point the analysis at the model with `--model` (YAML `model_res == input_res`, 0.043/0.150).
+
+**Files changed (Day 22):** `train_nnunet.py` (`--from`/`--name`, auto-ID, `_patch_torch_load`, `spawn` + `PYTHONPATH`); `nnUNet/nnunetv2/training/lr_scheduler/polylr.py` (version-guarded `verbose`).

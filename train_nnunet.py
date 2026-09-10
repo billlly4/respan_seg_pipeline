@@ -23,12 +23,19 @@ FROM-SCRATCH TRAINING  (new model, your own label scheme)
     python train_nnunet.py all            # all three steps in sequence
 
 ──────────────────────────────────────────────────────────────────
-FINE-TUNING  (start from RESPAN Model 1Bv2 pretrained weights)
+FINE-TUNING  (start from an existing model's weights)
 ──────────────────────────────────────────────────────────────────
-    python train_nnunet.py setup          # same setup step (uses FINETUNE_LABELS)
-    python train_nnunet.py finetune_plan  # transfer plans from Dataset226 + preprocess
-    python train_nnunet.py finetune_train # train with -pretrained_weights
-    python train_nnunet.py finetune       # all three fine-tune steps in sequence
+    python train_nnunet.py finetune                       # from bundled Dataset226
+    python train_nnunet.py finetune --name ZeissV1        # name the result; ID auto-assigned
+    python train_nnunet.py finetune --from nnunet_training/results/Dataset002_Spines --name ZeissV2
+
+    --from  = model folder to fine-tune FROM (any Dataset###_ folder with plans.json
+              + fold_all/checkpoint). Default: bundled Dataset226 (Model 1Bv2).
+    --name  = output dataset name suffix (result becomes Dataset###_<name>).
+    --id    = force the output ID number; omit it and the next free number is used.
+
+    (finetune = setup[FINETUNE_LABELS] -> finetune_plan -> finetune_train; the
+     individual steps still exist as finetune_plan / finetune_train.)
 
 Fine-tuning label scheme (FINETUNE_LABELS below):
     0=background  1=dendrite  2=spine_core  3=spine_edge  4=spine_neck
@@ -128,12 +135,32 @@ LABELS_TR        = os.path.join(DATASET_DIR, 'labelsTr')
 _ON_MAHTI = os.path.isdir('/projappl')   # CSC Tykky: run nnU-Net directly, not nested
 
 
+def _next_free_dataset_id():
+    """Smallest Dataset ID (>=1) not already used under raw/preprocessed/results."""
+    import re
+    used = set()
+    for base in (RAW_DIR, PREPROCESSED_DIR, RESULTS_DIR):
+        if os.path.isdir(base):
+            for name in os.listdir(base):
+                m = re.match(r'Dataset(\d+)_', name)
+                if m:
+                    used.add(int(m.group(1)))
+    n = 1
+    while n in used:
+        n += 1
+    return n
+
+
 def _nnunet_env():
     env = os.environ.copy()
     env['nnUNet_raw']          = RAW_DIR
     env['nnUNet_preprocessed'] = PREPROCESSED_DIR
     env['nnUNet_results']      = RESULTS_DIR
     env['PYTHONNOUSERSITE']    = '1'
+    # Put the nnU-Net repo on PYTHONPATH so 'spawn'ed worker processes (fresh
+    # interpreters that don't inherit the runtime sys.path.insert) can import it.
+    _pp = env.get('PYTHONPATH', '')
+    env['PYTHONPATH'] = NNUNET_REPO + (os.pathsep + _pp if _pp else '')
     return env
 
 
@@ -159,6 +186,31 @@ def _run(runner_code, label):
     print(f'  Done.')
 
 
+def _patch_torch_load():
+    """
+    PyTorch >=2.6 changed torch.load's default to weights_only=True, which
+    rejects the numpy objects stored in nnU-Net / RESPAN checkpoints. Those
+    checkpoints are trusted (our own / RESPAN's models), so default
+    weights_only=False for every nnU-Net load. No-op on older PyTorch.
+    """
+    try:
+        import torch
+        import functools
+    except ImportError:
+        return
+    if getattr(torch.load, '_respan_patched', False):
+        return
+    _orig_load = torch.load
+
+    @functools.wraps(_orig_load)
+    def _load(*args, **kwargs):
+        kwargs.setdefault('weights_only', False)
+        return _orig_load(*args, **kwargs)
+
+    _load._respan_patched = True
+    torch.load = _load
+
+
 def _run_cmd(argv, entry_module, entry_func, label):
     """
     Run any nnUNet entry point.
@@ -170,6 +222,15 @@ def _run_cmd(argv, entry_module, entry_func, label):
     print(f'{"="*60}')
     if _ON_MAHTI:
         _set_nnunet_env()
+        _patch_torch_load()
+        # Use 'spawn' for worker processes. The default 'fork' deadlocks once
+        # CUDA is initialized in the parent (nnU-Net's dataloader workers hang
+        # at epoch 0), so spawn is required to run data augmentation in parallel.
+        import multiprocessing as _mp
+        try:
+            _mp.set_start_method('spawn', force=True)
+        except RuntimeError:
+            pass
         sys.path.insert(0, NNUNET_REPO)
         sys.argv = argv
         import importlib
@@ -180,6 +241,17 @@ def _run_cmd(argv, entry_module, entry_func, label):
             f"import sys\n"
             f"sys.path.insert(0, r'{NNUNET_REPO}')\n"
             f"sys.argv = {argv!r}\n"
+            f"import multiprocessing as _mp\n"
+            f"_mp.set_start_method('spawn', force=True)\n"
+            # PyTorch >=2.6: default weights_only=False so trusted nnU-Net /
+            # RESPAN checkpoints (with numpy objects) still load.
+            f"import torch, functools\n"
+            f"_orig_load = torch.load\n"
+            f"@functools.wraps(_orig_load)\n"
+            f"def _load(*a, **k):\n"
+            f"    k.setdefault('weights_only', False)\n"
+            f"    return _orig_load(*a, **k)\n"
+            f"torch.load = _load\n"
             f"from {entry_module} import {entry_func}\n"
             f"{entry_func}()\n"
         )
@@ -270,7 +342,8 @@ def plan():
 # ---------------------------------------------------------------------------
 def finetune_plan():
     """
-    Transfer plans from Dataset226 (Model 1Bv2) and preprocess the dataset.
+    Transfer plans from the SOURCE model (default Dataset226 / Model 1Bv2, or
+    whatever --from points at) and preprocess the dataset.
     Replaces the 'plan' step when fine-tuning.
     """
     # Validate pretrained model exists
@@ -411,28 +484,62 @@ def finetune_train():
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
     import argparse
+    import re
 
     parser = argparse.ArgumentParser(description='nnU-Net Training Pipeline')
     parser.add_argument('step', nargs='?', default='help',
                         choices=['setup', 'plan', 'train', 'all',
                                  'finetune_plan', 'finetune_train', 'finetune', 'help'])
-    parser.add_argument('--id',   type=int, default=None,
-                        help='Dataset ID (e.g. 42). Default: 1')
     parser.add_argument('--name', type=str, default=None,
-                        help='Dataset name suffix (e.g. MySpines). Default: Spines')
+                        help='Output dataset name suffix (e.g. ZeissV1). '
+                             'Result becomes Dataset###_<name>. Default: Spines.')
+    parser.add_argument('--id',   type=int, default=None,
+                        help='Force the output dataset ID number. Omit it and the next '
+                             'free number is used (when --name is given).')
+    parser.add_argument('--from', dest='from_model', type=str, default=None,
+                        help='Model folder to fine-tune FROM (any Dataset###_ folder with '
+                             'plans.json + fold_all/checkpoint). Default: bundled Dataset226.')
     args = parser.parse_args()
 
+    # --- OUTPUT dataset: pick name + id ----------------------------------------
+    suffix = args.name or 'Spines'
     if args.id is not None:
-        DATASET_ID   = args.id
-        DATASET_NAME = f'Dataset{DATASET_ID:03d}_{args.name or "Spines"}'
-        DATASET_DIR  = os.path.join(RAW_DIR, DATASET_NAME)
-        IMAGES_TR    = os.path.join(DATASET_DIR, 'imagesTr')
-        LABELS_TR    = os.path.join(DATASET_DIR, 'labelsTr')
+        DATASET_ID = args.id                       # explicit number wins
     elif args.name is not None:
-        DATASET_NAME = f'Dataset{DATASET_ID:03d}_{args.name}'
-        DATASET_DIR  = os.path.join(RAW_DIR, DATASET_NAME)
-        IMAGES_TR    = os.path.join(DATASET_DIR, 'imagesTr')
-        LABELS_TR    = os.path.join(DATASET_DIR, 'labelsTr')
+        DATASET_ID = _next_free_dataset_id()       # name given, no id -> fresh number
+    # else: keep the module default (1) unchanged
+    DATASET_NAME = f'Dataset{DATASET_ID:03d}_{suffix}'
+    DATASET_DIR  = os.path.join(RAW_DIR, DATASET_NAME)
+    IMAGES_TR    = os.path.join(DATASET_DIR, 'imagesTr')
+    LABELS_TR    = os.path.join(DATASET_DIR, 'labelsTr')
+
+    # --- SOURCE model to fine-tune FROM (only relevant for finetune steps) ------
+    if args.from_model is not None:
+        SOURCE_MODEL_DIR = str(Path(args.from_model).resolve())
+        m = re.match(r'Dataset(\d+)', Path(SOURCE_MODEL_DIR).name)
+        if not m:
+            print(f"ERROR: --from folder name must start with 'Dataset<ID>_': "
+                  f"{Path(SOURCE_MODEL_DIR).name}")
+            sys.exit(1)
+        SOURCE_DATASET_ID  = int(m.group(1))
+        SOURCE_TRAINER_DIR = os.path.join(SOURCE_MODEL_DIR,
+                                          'nnUNetTrainer__nnUNetPlans__3d_fullres')
+        for _ck in ('checkpoint_final.pth', 'checkpoint_best.pth', 'checkpoint_latest.pth'):
+            _cand = os.path.join(SOURCE_TRAINER_DIR, 'fold_all', _ck)
+            if os.path.isfile(_cand):
+                PRETRAINED_WEIGHTS = _cand
+                break
+        else:
+            print(f'ERROR: no checkpoint found in '
+                  f'{os.path.join(SOURCE_TRAINER_DIR, "fold_all")}')
+            sys.exit(1)
+
+    if args.step in ('finetune', 'finetune_plan', 'finetune_train'):
+        print(f'Fine-tune FROM : {Path(SOURCE_MODEL_DIR).name}')
+        print(f'  weights      : {PRETRAINED_WEIGHTS}')
+    if args.step in ('setup', 'plan', 'train', 'all',
+                     'finetune', 'finetune_plan', 'finetune_train'):
+        print(f'Output dataset : {DATASET_NAME}')
 
     step = args.step
     if step == 'setup':

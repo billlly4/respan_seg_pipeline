@@ -6,3 +6,5 @@ nnunet_training/
 inference_cortical/
 old_stuff_to_compare/
 images_analysis/
+what_I_did/
+manual_fixing_labels/
