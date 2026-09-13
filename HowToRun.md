@@ -271,23 +271,11 @@ training_data/
     imagesTr/   crop01.tif        ← fill image
     labelsTr/   crop01.tif        ← corrected label (same name)
 ```
-```powershell
-# 💻 WORKSTATION PowerShell — driven by the labels; plain copy, no renaming
-$src = "<corrected>"                         # folder with imagesTr\ + labelsTr\ (same names)
-$dst = "F:\ResPan\training_data"
-New-Item -ItemType Directory -Force "$dst\imagesTr","$dst\labelsTr" | Out-Null
-Get-ChildItem "$src\labelsTr\*.tif" | ForEach-Object {
-    $img = Join-Path "$src\imagesTr" $_.Name
-    if (Test-Path $img) {
-        Copy-Item $img (Join-Path "$dst\imagesTr" $_.Name)
-        Copy-Item $_   (Join-Path "$dst\labelsTr" $_.Name)
-    } else { Write-Warning "No matching image for $($_.Name)" }
-}
-"images: " + (Get-ChildItem "$dst\imagesTr\*.tif").Count
-"labels: " + (Get-ChildItem "$dst\labelsTr\*.tif").Count
-```
-> ⚠️ If the names don't match, `setup` errors with `no matching label for …`. Put **only the crops
-> you want to train on** in the labels source first, so the counts come out right.
+Copy the crops you want to train on into `training_data/imagesTr/` and `training_data/labelsTr/`
+(use the **corrected** labels from macro 2's dated `labelsTr_*` folder). Keep only the crops you
+want — one image + one same-name label each.
+
+> ⚠️ If a name doesn't match between the two folders, `setup` errors with `no matching label for …`.
 
 Then upload `training_data/` to `/scratch/project_2019059/respan/` (🌐 DASHBOARD). Also make sure
 the **base model** is on Roihu at
