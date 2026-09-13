@@ -43,6 +43,8 @@ for (i = 0; i < lengthOf(filelist); i++) {
 		
 		if (endsWith(filelist[i], "_0000.tif")) {
 			labelname = substring(filelist[i], 0, lengthOf(filelist[i]) - 9) + ".tif";
+		} else {
+			labelname = filelist[i];   // image and label share the same name (no _0000)
 		}
 		open(labels_dir + labelname);
 		rename("labels");

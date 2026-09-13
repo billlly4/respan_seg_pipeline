@@ -218,15 +218,16 @@ Goal: turn the model's rough `labels/` into **corrected ground truth** — necks
 guide is `correction_manual.pdf` in the same folder.
 
 ### 7.1 Lay out a correction folder
-Make a folder (e.g. `training_data2/`) with two subfolders — the **image** and its **label** must
-share the **same base name**, with the image carrying the `_0000` suffix:
+Make a folder (e.g. `training_data2/`) with two subfolders — the **image** and its **label** just
+need the **same filename**:
 ```
 training_data2/
-    imagesTr/   Experiment-35-…-01-1_0000.tif     (the structural fill TIF)
-    labelsTr/   Experiment-35-…-01-1.tif          (the model's label to correct)
+    imagesTr/   Experiment-35-…-01-1.tif     (the structural fill TIF)
+    labelsTr/   Experiment-35-…-01-1.tif     (the model's label to correct — same name)
 ```
-(The model wrote `labels/<name>.tif`; the fill image is your Part 1 `extracted_ch1` TIF. Copy the
-image in with `_0000` added, the label with the bare name.)
+This is already how they come out: the fill image is your Part 1 `extracted_ch1` TIF, and the model
+wrote its label as `labels/<name>.tif` with the same name — so just drop each into `imagesTr/` and
+`labelsTr/`. **No renaming needed** (macro 1 pairs them by identical name).
 
 ### 7.2 Macro 1 — split label into editable channels
 Run **`1_Labels_to_Channels_for_Annotation-v2.ijm`**:
@@ -261,30 +262,26 @@ folder). These corrected labels are your ground truth for training.
 # PART 8 — Build `training_data/` for the trainer 💻 WORKSTATION (Fiji)
 
 `train_nnunet.py` reads `training_data/imagesTr/` + `training_data/labelsTr/`, pairing each image
-with its label by **identical filename**. So in `training_data/`, an image and its label must have
-the **exact same name**. The trainer then re-adds `_0000` and `caseNNN` numbering itself when it
-builds the real nnU-Net dataset (image → `case001_0000.tif`, label → `case001.tif`).
+with its label by **identical filename** — so the image and its corrected label just need the
+**same name** (they already do: `crop01.tif` + `crop01.tif`). The trainer adds `_0000` and `caseNNN`
+numbering itself when it builds the real nnU-Net dataset. **No renaming.**
 
-Your corrected labels come out of the macro **bare** (`crop01.tif`) and the images carry **`_0000`**
-(`crop01_0000.tif`) — those don't match. Make them match. Either convention works as long as the
-two names are identical; the recipe below **adds `_0000` to the labels** so both sides are `_0000`:
 ```
 training_data/
-    imagesTr/   crop01_0000.tif        ← fill image (keeps _0000)
-    labelsTr/   crop01_0000.tif        ← corrected label (given _0000 to match)
+    imagesTr/   crop01.tif        ← fill image
+    labelsTr/   crop01.tif        ← corrected label (same name)
 ```
 ```powershell
-# 💻 WORKSTATION PowerShell — driven by the labels; adds _0000 so each label matches its image
-$src = "<corrected>"                         # folder with imagesTr\ (…_0000.tif) + labelsTr\ (bare)
+# 💻 WORKSTATION PowerShell — driven by the labels; plain copy, no renaming
+$src = "<corrected>"                         # folder with imagesTr\ + labelsTr\ (same names)
 $dst = "F:\ResPan\training_data"
 New-Item -ItemType Directory -Force "$dst\imagesTr","$dst\labelsTr" | Out-Null
 Get-ChildItem "$src\labelsTr\*.tif" | ForEach-Object {
-    $stem = $_.BaseName -replace '_0000$',''            # normalise, whether label is bare or _0000
-    $img  = Join-Path "$src\imagesTr" ($stem + "_0000.tif")
+    $img = Join-Path "$src\imagesTr" $_.Name
     if (Test-Path $img) {
-        Copy-Item $img (Join-Path "$dst\imagesTr" ($stem + "_0000.tif"))
-        Copy-Item $_   (Join-Path "$dst\labelsTr" ($stem + "_0000.tif"))
-    } else { Write-Warning "No matching image for $stem" }
+        Copy-Item $img (Join-Path "$dst\imagesTr" $_.Name)
+        Copy-Item $_   (Join-Path "$dst\labelsTr" $_.Name)
+    } else { Write-Warning "No matching image for $($_.Name)" }
 }
 "images: " + (Get-ChildItem "$dst\imagesTr\*.tif").Count
 "labels: " + (Get-ChildItem "$dst\labelsTr\*.tif").Count

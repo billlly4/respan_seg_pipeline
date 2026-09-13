@@ -225,14 +225,17 @@ When the base model underperforms on a new microscope/marker, fine-tune:
 2. **Correct the labels by hand** — see `manual_fixing_labels/` (`correction_manual.pdf` + the two
    ImageJ macros): `1_Labels_to_Channels…` turns labels into editable channels → fix in Fiji
    (necks are the priority) → `2_Channels_to_Labels…` converts back.
-3. **Name for nnU-Net** — `batch-convertor/rename_for_nnunet.ijm` adds the `_0000` suffix to the
-   images (labels keep the bare name). Result: `imagesTr/<name>_0000.tif` + `labelsTr/<name>.tif`.
-4. **Fine-tune** from the base model:
+3. **Assemble `training_data/`** — put the fill image and its corrected label under
+   `training_data/imagesTr/` and `training_data/labelsTr/` with the **same filename**
+   (`<name>.tif` in both). No renaming — the trainer adds nnU-Net's `_0000`/`caseNNN` itself.
+4. **Fine-tune** from the base model — one command does it all (build dataset → transfer plans →
+   train with pretrained weights):
    ```bash
-   <respaninternal-python> train_nnunet.py setup     # build dataset + dataset.json
-   <respaninternal-python> train_nnunet.py plan      # fingerprint + preprocess
-   <respaninternal-python> train_nnunet.py finetune  # ~hours on GPU (resumable)
+   <respaninternal-python> train_nnunet.py finetune --name MyModel   # ~hours on GPU
    ```
+   `--name` sets the result name (ID auto-assigned); add `--from <model folder>` to fine-tune from a
+   model other than the default Dataset226 (e.g. a previous fine-tune). Training-from-scratch is
+   `train_nnunet.py all` instead.
 5. Point analysis at the new model (`--model`, or place it in `images_analysis/model/`) and set
    `model_res == input_res` in the YAML (fine-tuned at native resolution → no rescaling).
 
