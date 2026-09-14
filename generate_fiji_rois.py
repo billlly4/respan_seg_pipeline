@@ -210,7 +210,7 @@ def _masks_from_labels_csv(label_path, csv_path):
 # Per-image processing
 # ---------------------------------------------------------------------------
 
-def process_image(crop_dir):
+def process_image(crop_dir, source='auto'):
     crop_dir = Path(crop_dir)
     name = crop_dir.name
 
@@ -223,7 +223,8 @@ def process_image(crop_dir):
     print(f'Processing {name}')
 
     masks = None
-    if vol_path.exists():
+    # source='fallback' forces the semantic-label + CSV path (skip instance volume).
+    if source != 'fallback' and vol_path.exists():
         try:
             masks = _masks_from_instance_volume(vol_path)
             if masks is not None:
@@ -274,6 +275,10 @@ def parse_args():
                    help='Root directory containing per-crop folders')
     p.add_argument('--crop',  default=None,
                    help='Process only this crop subfolder name (default: all)')
+    p.add_argument('--source', choices=['auto', 'fallback'], default='auto',
+                   help="ROI source: 'auto' = RESPAN instance volume if present else "
+                        "labels+CSV; 'fallback' = always use labels + CSV (skip the "
+                        "instance volume).")
     return p.parse_args()
 
 
@@ -294,7 +299,7 @@ def main():
         sys.exit(1)
 
     for crop_dir in crop_dirs:
-        process_image(crop_dir)
+        process_image(crop_dir, source=args.source)
 
 
 if __name__ == '__main__':
