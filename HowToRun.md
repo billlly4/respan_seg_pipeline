@@ -38,20 +38,36 @@ USE the new model         (point analysis at it)                 ── PART 10
 
 ### Fixed facts for this project (already set up on Roihu)
 - Project: `project_2019059` (use **your own** CSC username where a command needs it)
-- Code: `/scratch/project_2019059/respan/`
+- Code (shared, read-only): `/scratch/project_2019059/respan/`
+- **Your** data/models/results: `RESPAN_WORKDIR` → `/scratch/project_2019059/respan/users/$USER`
+  (set `export RESPAN_WORKDIR=…` in every job so you don't collide with other members — see the
+  "Shared project" box below; omit it and everything just lives next to the code, single-user)
 - Envs: `/projappl/project_2019059/respan/envs/respandev` (analysis) and `.../respaninternal` (nnU-Net)
 - Runtime modules: `gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12`
 - Two Python interpreters, always called by **full path** (no `conda activate`):
   - **respandev** → `/projappl/project_2019059/respan/envs/respandev/bin/python`
   - **respaninternal** → `/projappl/project_2019059/respan/envs/respaninternal/bin/python`
 
-> **Shared project — anyone on `project_2019059` can use this.** The code, envs, and `--account`
-> are all project-level, so it works as-is; just use **your own** CSC username where one is needed
-> (`scancel -u $USER` cancels your own jobs). Your `~/run_*.sh` scripts and `*.out` logs live in
-> *your* home dir — no conflict. **But** input folders on `/scratch` (`images_analysis/`,
-> `training_data/`) are shared: if two people run against the same folder at once they overwrite
-> each other, so **work in separate subfolders** or coordinate. Trained models won't clash —
-> `--name` auto-assigns a fresh `Dataset###`.
+> **Shared project — each person works in isolation via `RESPAN_WORKDIR`.** Everyone on
+> `project_2019059` shares one **code** checkout at `/scratch/project_2019059/respan/`, but each
+> person keeps their **own data, models and results** under their own working directory — so two
+> people can segment, analyse and train **at the same time without interfering**.
+>
+> Set it once per session / in every job script:
+> ```bash
+> export RESPAN_WORKDIR=/scratch/project_2019059/respan/users/$USER
+> ```
+> All of these then live **under your workdir**, private to you:
+> ```
+> $RESPAN_WORKDIR/
+>     images_analysis/{images,model}/   ← your datasets + the model you analyse with
+>     training_data/{imagesTr,labelsTr}/← your fine-tune data
+>     nnunet_training/                  ← your trained models + results
+> ```
+> The shared code (`run_*.py`, `train_nnunet.py`, `nnUNet/`, `cloned_respan/`) is read-only and
+> never written to. If `RESPAN_WORKDIR` is unset it defaults to the code dir (single-user mode), so
+> nothing breaks. Also use **your own** CSC username where needed (`scancel -u $USER`); your
+> `~/run_*.sh` scripts and `*.out` logs already live in your own home dir.
 
 ### Label class scheme (what the pixel values mean)
 | 0 background | 1 dendrite | 2 spine core | 3 spine shell (membrane) | 4 spine neck | 5 soma (ignored) | 6 axon (ignored) |
@@ -108,8 +124,8 @@ Parameters:
 
 # PART 2 — Upload to Roihu 🌐 DASHBOARD
 
-Open `https://www.roihu.csc.fi` (MFA login) → **Files** → go to
-`/scratch/project_2019059/respan/` and drag-drop:
+Open `https://www.roihu.csc.fi` (MFA login) → **Files** → go to **your workdir**
+`/scratch/project_2019059/respan/users/<your-username>/` (create it if it's not there) and drag-drop:
 - your dataset folder (e.g. `images_analysis/`, containing `images/` + `model/`)
 - **if you changed any script**, re-upload it (`run_respan.py`, `run_nnunet_only.py`,
   `generate_fiji_rois.py`, `train_nnunet.py`, …). Code changes just overwrite the file —
@@ -144,6 +160,7 @@ cat > ~/run_seg.sh <<'EOF'
 #SBATCH --time=00:15:00
 #SBATCH --output=seg_%j.out
 module load gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12
+export RESPAN_WORKDIR=/scratch/project_2019059/respan/users/$USER   # your private data/results
 /projappl/project_2019059/respan/envs/respaninternal/bin/python /scratch/project_2019059/respan/run_nnunet_only.py
 EOF
 sbatch ~/run_seg.sh
@@ -162,6 +179,7 @@ srun --account=project_2019059 --partition=gputest --gres=gpu:gh200:1 --time=00:
 ```bash
 # 🖥️ GPU-NODE (prompt is now rg####)
 module load gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12
+export RESPAN_WORKDIR=/scratch/project_2019059/respan/users/$USER   # your private data/results
 /projappl/project_2019059/respan/envs/respaninternal/bin/python /scratch/project_2019059/respan/run_nnunet_only.py
 ```
 
@@ -177,6 +195,7 @@ module load gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12
 nnU-Net (that's why Part 4 ran first — a Tykky container can't launch another container).
 ```bash
 module load gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12
+export RESPAN_WORKDIR=/scratch/project_2019059/respan/users/$USER   # your private data/results
 /projappl/project_2019059/respan/envs/respandev/bin/python /scratch/project_2019059/respan/run_respan.py
 ```
 - Limit to one dataset: append its folder name, e.g. `… run_respan.py images_analysis`
@@ -187,7 +206,7 @@ module load gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12
 `ROIs/<name>_rois_3d.zip` (per-Z-slice polygons) + `ROIs/<name>_rois_mip.zip` (flat MIP polygons).
 ROIs are named `dendrite`, `spine_{id}`, `neck_{id}` with IDs matching the CSV.
 ```bash
-/projappl/project_2019059/respan/envs/respandev/bin/python /scratch/project_2019059/respan/generate_fiji_rois.py --root /scratch/project_2019059/respan/images_analysis
+/projappl/project_2019059/respan/envs/respandev/bin/python /scratch/project_2019059/respan/generate_fiji_rois.py --root "$RESPAN_WORKDIR/images_analysis"
 ```
 > ⚠️ **Always pass an absolute `--root`** (or `cd` into the repo first). Its default is a *relative*
 > path, so running it from your home directory gives `FileNotFoundError: 'images_analysis'`.
@@ -277,10 +296,11 @@ want — one image + one same-name label each.
 
 > ⚠️ If a name doesn't match between the two folders, `setup` errors with `no matching label for …`.
 
-Then upload `training_data/` to `/scratch/project_2019059/respan/` (🌐 DASHBOARD). Also make sure
-the **base model** is on Roihu at
-`cloned_respan/Dataset226_Global1Bv2_XY65nm_Z150nm_CARE-Aug_spinecore_neck_dend_soma_axon_V6/`
-— fine-tuning initializes from its `checkpoint_final.pth` (or point `--from` at another model, PART 9).
+Then upload `training_data/` into **your workdir**
+`/scratch/project_2019059/respan/users/<your-username>/` (🌐 DASHBOARD) — the trainer reads
+`$RESPAN_WORKDIR/training_data/`, so each person's training set stays separate. The **base model**
+is shared at `/scratch/project_2019059/respan/cloned_respan/Dataset226_…_V6/` — fine-tuning
+initializes from its `checkpoint_final.pth` (or point `--from` at another model, PART 9).
 
 ---
 
@@ -305,6 +325,7 @@ cat > ~/run_finetune.sh <<'EOF'
 #SBATCH --time=36:00:00
 #SBATCH --output=finetune_%j.out
 module load gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12
+export RESPAN_WORKDIR=/scratch/project_2019059/respan/users/$USER   # your private data/results
 cd /scratch/project_2019059/respan
 export PYTHONUNBUFFERED=1
 export nnUNet_n_proc_DA=8
@@ -382,7 +403,8 @@ nnunet_training/results/Dataset001_ZeissV1/nnUNetTrainer__nnUNetPlans__3d_fullre
 | Still black / frozen | Stuck job holding the node: `squeue --me`, then `scancel -u $USER`, retry. |
 | Interactive keeps dying | Use **sbatch** (Options A) — it needs no live terminal. |
 | Labels look wrong / at wrong scale | YAML `input_res`/`model_res` not set for this data, or wrong model in `model/`. |
-| nnU-Net says "no GPU" | Forgot `module load gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12`. |
+| nnU-Net says "no GPU" | Forgot `module load gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12
+export RESPAN_WORKDIR=/scratch/project_2019059/respan/users/$USER   # your private data/results`. |
 | Fine-tune can't find pretrained weights | Base `Dataset226_…_V6/` missing on Roihu (Part 8), or bad `--from` path. |
 
 **Cancel everything:** 🔑 LOGIN SHELL → `scancel -u $USER`
@@ -405,14 +427,16 @@ cat > ~/run_seg.sh <<'EOF'                          # 🔑 segment
 #SBATCH --time=00:15:00
 #SBATCH --output=seg_%j.out
 module load gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12
+export RESPAN_WORKDIR=/scratch/project_2019059/respan/users/$USER   # your private data/results
 /projappl/project_2019059/respan/envs/respaninternal/bin/python /scratch/project_2019059/respan/run_nnunet_only.py
 EOF
 sbatch ~/run_seg.sh ; squeue --me ; cat seg_*.out
 
 # 🖥️ (optional) analysis + ROIs — add after the segment line, or run interactively:
 module load gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12
+export RESPAN_WORKDIR=/scratch/project_2019059/respan/users/$USER   # your private data/results
 /projappl/project_2019059/respan/envs/respandev/bin/python /scratch/project_2019059/respan/run_respan.py
-/projappl/project_2019059/respan/envs/respandev/bin/python /scratch/project_2019059/respan/generate_fiji_rois.py --root /scratch/project_2019059/respan/images_analysis
+/projappl/project_2019059/respan/envs/respandev/bin/python /scratch/project_2019059/respan/generate_fiji_rois.py --root "$RESPAN_WORKDIR/images_analysis"
 
 # 🌐 download /scratch/project_2019059/respan/images_analysis/ (dashboard)
 ```

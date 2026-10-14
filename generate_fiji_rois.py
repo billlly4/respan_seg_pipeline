@@ -48,6 +48,11 @@ from scipy import ndimage as ndi
 from skimage.measure import find_contours, label as sk_label
 import roifile
 
+_BASE = Path(__file__).resolve().parent          # shared CODE location
+# Per-user working directory (set RESPAN_WORKDIR to match run_respan.py so each
+# person's crops/ROIs stay separate). Defaults to the code dir.
+_WORKDIR = Path(os.environ.get('RESPAN_WORKDIR', _BASE)).resolve()
+
 
 # ---------------------------------------------------------------------------
 # ROI helpers
@@ -271,8 +276,9 @@ def process_image(crop_dir, source='auto'):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--root',  default='images_analysis',
-                   help='Root directory containing per-crop folders')
+    p.add_argument('--root',  default=str(_WORKDIR / 'images_analysis'),
+                   help='Root directory containing per-crop folders '
+                        '(default: $RESPAN_WORKDIR/images_analysis)')
     p.add_argument('--crop',  default=None,
                    help='Process only this crop subfolder name (default: all)')
     p.add_argument('--source', choices=['auto', 'fallback'], default='auto',

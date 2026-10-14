@@ -50,11 +50,17 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 # ---------------------------------------------------------------------------
 # PATHS  — auto-detected by hostname; edit the two blocks below if needed
 # ---------------------------------------------------------------------------
-_BASE = Path(__file__).resolve().parent
+_BASE = Path(__file__).resolve().parent          # shared CODE location (read-only)
 
-DATASETS_ROOT = str(_BASE)
-RESPAN_ROOT   = str(_BASE / 'cloned_respan')
-NNUNET_REPO   = str(_BASE / 'nnUNet')
+# Per-user working directory for DATA + OUTPUTS. Set RESPAN_WORKDIR so several
+# people share this one code checkout but keep their datasets, models and
+# results completely separate (no interference). Defaults to the code dir, so
+# single-user behaviour is unchanged.
+_WORKDIR = Path(os.environ.get('RESPAN_WORKDIR', _BASE)).resolve()
+
+DATASETS_ROOT = str(_WORKDIR)                     # where this user's dataset folders live
+RESPAN_ROOT   = str(_BASE / 'cloned_respan')      # shared code
+NNUNET_REPO   = str(_BASE / 'nnUNet')             # shared code
 
 def _find_model(model_folder):
     """Return the path to the first Dataset* subfolder inside model_folder."""
@@ -64,7 +70,7 @@ def _find_model(model_folder):
         raise FileNotFoundError(f'No Dataset* folder found in {model_folder}')
     return str(candidates[0])
 
-MODEL_DIR = _find_model(_BASE / 'images_analysis' / 'model')
+MODEL_DIR = _find_model(_WORKDIR / 'images_analysis' / 'model')
 
 # Locate the 'respaninternal' env's Python (nnU-Net runs there, a separate env).
 # Portable — no hardcoded project/user. Resolution order:

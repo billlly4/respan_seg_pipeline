@@ -59,10 +59,16 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-_BASE = Path(__file__).resolve().parent
+_BASE = Path(__file__).resolve().parent          # shared CODE location (read-only)
 
-TRAINING_DATA = str(_BASE / 'training_data')
-NNUNET_BASE   = str(_BASE / 'nnunet_training')
+# Per-user working directory for DATA + OUTPUTS. Set RESPAN_WORKDIR so several
+# people share this one code checkout but keep their training_data and trained
+# models completely separate (no interference). Defaults to the code dir, so
+# single-user behaviour is unchanged.
+_WORKDIR = Path(os.environ.get('RESPAN_WORKDIR', _BASE)).resolve()
+
+TRAINING_DATA = str(_WORKDIR / 'training_data')
+NNUNET_BASE   = str(_WORKDIR / 'nnunet_training')
 
 DATASET_ID   = 1
 DATASET_NAME = f'Dataset{DATASET_ID:03d}_Spines'
@@ -135,9 +141,16 @@ LABELS_TR        = os.path.join(DATASET_DIR, 'labelsTr')
 _ON_MAHTI = os.path.isdir('/projappl')   # CSC Tykky: run nnU-Net directly, not nested
 
 
-def _next_free_dataset_id():
-    """Smallest Dataset ID (>=1) not already used under raw/preprocessed/results."""
+def _claim_free_dataset_id(suffix):
+    """Atomically pick + claim the next free Dataset ID.
+
+    Scans raw/preprocessed/results for used numbers, then *claims* a number by
+    creating its raw dataset dir with exist_ok=False (an atomic filesystem op).
+    If two runs race for the same number, only one mkdir wins; the loser bumps
+    to the next number and retries. Returns (id, name, dataset_dir).
+    """
     import re
+    os.makedirs(RAW_DIR, exist_ok=True)
     used = set()
     for base in (RAW_DIR, PREPROCESSED_DIR, RESULTS_DIR):
         if os.path.isdir(base):
@@ -146,9 +159,17 @@ def _next_free_dataset_id():
                 if m:
                     used.add(int(m.group(1)))
     n = 1
-    while n in used:
-        n += 1
-    return n
+    while True:
+        while n in used:
+            n += 1
+        name = f'Dataset{n:03d}_{suffix}'
+        dataset_dir = os.path.join(RAW_DIR, name)
+        try:
+            os.makedirs(dataset_dir, exist_ok=False)   # atomic claim
+            return n, name, dataset_dir
+        except FileExistsError:
+            used.add(n)                                 # someone else grabbed it
+            n += 1
 
 
 def _nnunet_env():
@@ -504,12 +525,16 @@ if __name__ == '__main__':
     # --- OUTPUT dataset: pick name + id ----------------------------------------
     suffix = args.name or 'Spines'
     if args.id is not None:
-        DATASET_ID = args.id                       # explicit number wins
+        DATASET_ID   = args.id                     # explicit number wins
+        DATASET_NAME = f'Dataset{DATASET_ID:03d}_{suffix}'
+        DATASET_DIR  = os.path.join(RAW_DIR, DATASET_NAME)
     elif args.name is not None:
-        DATASET_ID = _next_free_dataset_id()       # name given, no id -> fresh number
-    # else: keep the module default (1) unchanged
-    DATASET_NAME = f'Dataset{DATASET_ID:03d}_{suffix}'
-    DATASET_DIR  = os.path.join(RAW_DIR, DATASET_NAME)
+        # name given, no id -> atomically claim a fresh number (concurrency-safe)
+        DATASET_ID, DATASET_NAME, DATASET_DIR = _claim_free_dataset_id(suffix)
+    else:
+        # keep the module default (1) unchanged
+        DATASET_NAME = f'Dataset{DATASET_ID:03d}_{suffix}'
+        DATASET_DIR  = os.path.join(RAW_DIR, DATASET_NAME)
     IMAGES_TR    = os.path.join(DATASET_DIR, 'imagesTr')
     LABELS_TR    = os.path.join(DATASET_DIR, 'labelsTr')
 
