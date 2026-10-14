@@ -5,6 +5,30 @@ pipeline **headless** (no GUI), on a local workstation or on CSC's **Roihu** sup
 It automates: data prep → nnU-Net segmentation → RESPAN spine analysis → Fiji ROI export, plus
 model fine-tuning.
 
+> **Want step-by-step commands?** See **[`HowToRun.md`](HowToRun.md)** — a copy-paste 0→100 runbook
+> (local + Roihu). This README explains *what's here and how the pieces fit together*.
+
+---
+
+## What's in this repo
+
+| Path | What it is |
+|---|---|
+| `run_respan.py` | Main driver — nnU-Net segmentation **+** RESPAN analysis (local: one command) |
+| `run_nnunet_only.py` | Segmentation only (used on HPC, where the two stages run separately) |
+| `generate_fiji_rois.py` | Convert RESPAN's output into Fiji-ready ROI zips |
+| `train_nnunet.py` | Train / fine-tune the nnU-Net segmentation model |
+| `train_care.py`, `train_selfnet.py` | Optional image-restoration model training (not in the default run) |
+| `batch‑convertor/*.ijm` | Fiji macros for data prep (raw format → TIF, channel extraction) |
+| `manual_fixing_labels/` | Label-correction macros + guide, for building fine-tuning data |
+| `cloned_respan/` | Vendored **RESPAN** (third-party) — the spine-analysis engine |
+| `nnUNet/` | Vendored **nnU-Net** (third-party) — the segmentation engine |
+| `images_analysis/` | A dataset folder: your `images/`, the `model/`, and per-image outputs |
+| `HowToRun.md` | Step-by-step runbook (local + Roihu HPC) |
+
+The two big folders (`cloned_respan/`, `nnUNet/`) are external frameworks used as-is; everything at
+the top level is the thin layer that drives them headless, reproducibly, and on HPC.
+
 ---
 
 ## Contents
@@ -102,9 +126,11 @@ because a Tykky container can't launch another container.
 <a name="layout"></a>
 ## 5. Folder layout for analysis
 
-`run_respan.py` scans its own directory for **dataset folders**, each containing an `images/`
-subfolder with the TIFs + one `Analysis_Settings.yaml`. The nnU-Net model lives in
-`images_analysis/model/`:
+`run_respan.py` scans its **working directory** for **dataset folders**, each containing an
+`images/` subfolder with the TIFs + one `Analysis_Settings.yaml`. The nnU-Net model lives in
+`images_analysis/model/`. The working directory defaults to the scripts' own folder, but you can
+point it elsewhere with the `RESPAN_WORKDIR` environment variable — set it to a per-user path so
+several people can share one code checkout without their data/results colliding:
 
 ```
 <repo root>/
@@ -205,9 +231,14 @@ module load gcc/13.4.0 cuda/12.6.3 cudnn/9.17.0.29-12
 ## 9. Export Fiji ROIs
 
 ```bash
-<respandev-python> generate_fiji_rois.py            # all crops
-<respandev-python> generate_fiji_rois.py --crop <name>
+<respandev-python> generate_fiji_rois.py                      # all crops
+<respandev-python> generate_fiji_rois.py --crop <name>        # one crop
+<respandev-python> generate_fiji_rois.py --source fallback    # force labels+CSV, skip instance volume
 ```
+
+ROI source: by default it uses RESPAN's instance-segmentation volume when present (cleanest
+per-spine separation) and falls back to the semantic label + CSV otherwise; `--source fallback`
+forces that fallback path.
 
 Writes per crop: `ROIs/<name>_rois_3d.zip` (per-Z-slice polygons for the stack) and
 `ROIs/<name>_rois_mip.zip` (flat polygons for a MIP). ROIs are named `dendrite`, `spine_{id}`,
@@ -274,5 +305,5 @@ SelfNet Z-plane rule: `original_Z ≥ ceil(64 × scale)`, where `scale = XY / Z 
 
 *Interpreter paths, project numbers, and data locations are auto-detected or set in the YAML — the
 `<respandev-python>` / `<respaninternal-python>` placeholders above are the full-path Python of
-each environment. See `RESPAN_Training_DeepDive.md` for step-by-step details and
-`what_I_did/WhatHappened.md` for the full project log.*
+each environment. For the exact copy-paste commands (local and Roihu HPC), see
+[`HowToRun.md`](HowToRun.md).*
